@@ -706,7 +706,7 @@ class DownloadJob:
     add_to_lazer_collections: bool = False
     cm_cli_command: list[str] | None = None  # full argv prefix
     lazer_realm_path: str | None = None      # path to client.realm
-    on_name_collision: str = "merge"          # merge|skip|rename
+    target_collection_name: str | None = None  # if set, all maps go here
     restart_lazer_after: bool = False
 
 
@@ -921,9 +921,21 @@ class DownloadWorker(QObject):
             self.log.emit("[lazer] no new collections to merge — skipping")
             return
 
+        # If the user picked a single target collection name, rewrite ALL
+        # the new collections to use that name. The merge step will then
+        # combine them (and any same-named existing one) into a single
+        # collection.
+        if self.job.target_collection_name:
+            target = self.job.target_collection_name
+            self.log.emit(
+                f"[lazer] funneling all new maps into collection {target!r}"
+            )
+            for c in new_collections:
+                c.name = target
+
         merged = merge_collection_lists(
             existing, new_collections,
-            on_name_collision=self.job.on_name_collision,
+            on_name_collision="merge",
         )
         self.log.emit(
             f"[lazer] merged result: {len(merged)} collection(s) "
@@ -1164,18 +1176,36 @@ class MainWindow(QMainWindow):
         realm_w = QWidget(); realm_w.setLayout(realm_row)
         lazer_form.addRow("client.realm:", realm_w)
 
+        # Target picker: existing collections fetched via CM CLI, or
+        # "create new", or the default "one per osu!collector collection".
         from PyQt6.QtWidgets import QComboBox
-        self.collision_combo = QComboBox()
-        self.collision_combo.addItems([
-            "merge — combine beatmaps into existing collection",
-            "skip — keep existing, don't add anything",
-            "rename — append (2), (3)… to the new one",
-        ])
-        modes = ["merge", "skip", "rename"]
-        saved = self.settings.get("on_name_collision", "merge")
-        self.collision_combo.setCurrentIndex(modes.index(saved) if saved in modes else 0)
-        self.collision_combo._modes = modes  # type: ignore
-        lazer_form.addRow("If a collection name already exists:", self.collision_combo)
+        target_row = QHBoxLayout()
+        self.target_combo = QComboBox()
+        self.target_combo.setEditable(False)
+        self.target_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._reset_target_combo()
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        self.refresh_collections_btn = QPushButton("Refresh")
+        self.refresh_collections_btn.setToolTip(
+            "Fetch the list of existing osu!lazer collections by running\n"
+            "Collection Manager CLI against your client.realm."
+        )
+        self.refresh_collections_btn.clicked.connect(self._on_refresh_collections)
+        target_row.addWidget(self.target_combo, stretch=1)
+        target_row.addWidget(self.refresh_collections_btn)
+        target_w = QWidget(); target_w.setLayout(target_row)
+        lazer_form.addRow("Add maps to:", target_w)
+
+        # New-collection name field, only shown when "Create new..." picked.
+        self.new_name_edit = QLineEdit()
+        self.new_name_edit.setPlaceholderText("Name of the new collection")
+        self.new_name_edit.setText(self.settings.get("new_collection_name", ""))
+        self.new_name_edit.setVisible(False)
+        lazer_form.addRow("New collection name:", self.new_name_edit)
+        # Track the row's label widget so we can show/hide it together.
+        self._new_name_label = lazer_form.labelForField(self.new_name_edit)
+        if self._new_name_label is not None:
+            self._new_name_label.setVisible(False)
 
         self.restart_lazer_cb = QCheckBox(
             "Restart osu!lazer after merging (otherwise just leave it closed)"
@@ -1246,8 +1276,6 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        modes = getattr(self.collision_combo, "_modes",
-                        ["merge", "skip", "rename"])
         CONFIG_FILE.write_text(json.dumps({
             "last_output_dir": self.dir_edit.text(),
             "download_beatmaps": self.download_beatmaps_cb.isChecked(),
@@ -1260,7 +1288,8 @@ class MainWindow(QMainWindow):
             "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
             "cm_cli_command": self.cm_cli_edit.text(),
             "lazer_realm_path": self.realm_edit.text(),
-            "on_name_collision": modes[self.collision_combo.currentIndex()],
+            "target_collection": self.target_combo.currentText(),
+            "new_collection_name": self.new_name_edit.text(),
             "restart_lazer_after": self.restart_lazer_cb.isChecked(),
         }, indent=2))
 
@@ -1315,6 +1344,125 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.realm_edit.setText(path)
+
+    # ----- target collection picker ---------------------------------------
+
+    DEFAULT_TARGET = "(default — one lazer collection per osu!collector collection)"
+    NEW_TARGET = "+ Create new collection..."
+    SEPARATOR = "──────────"
+
+    def _reset_target_combo(self) -> None:
+        """Populate the target combo with just the default + 'Create new'."""
+        self.target_combo.blockSignals(True)
+        self.target_combo.clear()
+        self.target_combo.addItem(self.DEFAULT_TARGET)
+        self.target_combo.addItem(self.NEW_TARGET)
+        # Restore last-used selection if it still makes sense.
+        saved = self.settings.get("target_collection", "")
+        idx = self.target_combo.findText(saved) if saved else 0
+        self.target_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.target_combo.blockSignals(False)
+
+    def _on_target_changed(self, _idx: int) -> None:
+        text = self.target_combo.currentText()
+        show_new = (text == self.NEW_TARGET)
+        self.new_name_edit.setVisible(show_new)
+        if self._new_name_label is not None:
+            self._new_name_label.setVisible(show_new)
+        if show_new:
+            self.new_name_edit.setFocus()
+
+    def _resolve_cm_cli(self) -> list[str] | None:
+        raw = self.cm_cli_edit.text().strip()
+        if raw:
+            return raw.split()
+        cfg = CmCliRunner.autodetect()
+        if cfg is not None:
+            self.cm_cli_edit.setText(" ".join(cfg.command))
+            return cfg.command
+        return None
+
+    def _on_refresh_collections(self) -> None:
+        """Run CM CLI export to read existing lazer collection names."""
+        realm_str = self.realm_edit.text().strip()
+        if not realm_str or not Path(realm_str).expanduser().exists():
+            QMessageBox.warning(
+                self, APP_NAME,
+                "client.realm path is empty or doesn't exist. Set it first."
+            )
+            return
+        cmd = self._resolve_cm_cli()
+        if cmd is None:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Collection Manager CLI not found. Install it or paste the "
+                "full invocation into the CM CLI command field."
+            )
+            return
+
+        self.refresh_collections_btn.setEnabled(False)
+        self.refresh_collections_btn.setText("Working…")
+        QApplication.processEvents()
+        try:
+            collections = self._fetch_existing_collections(
+                cmd, Path(realm_str).expanduser()
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, APP_NAME,
+                f"Failed to read existing collections:\n\n{e}"
+            )
+            self.refresh_collections_btn.setEnabled(True)
+            self.refresh_collections_btn.setText("Refresh")
+            return
+        self.refresh_collections_btn.setEnabled(True)
+        self.refresh_collections_btn.setText("Refresh")
+
+        # Rebuild the combo: default → existing items → separator → new.
+        previous = self.target_combo.currentText()
+        self.target_combo.blockSignals(True)
+        self.target_combo.clear()
+        self.target_combo.addItem(self.DEFAULT_TARGET)
+        if collections:
+            self.target_combo.insertSeparator(self.target_combo.count())
+            for c in collections:
+                label = f"{c.name}  ({len(c.beatmaps)} maps)"
+                self.target_combo.addItem(label, userData=c.name)
+        self.target_combo.insertSeparator(self.target_combo.count())
+        self.target_combo.addItem(self.NEW_TARGET)
+        # Try to restore previous selection
+        idx = self.target_combo.findText(previous)
+        self.target_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.target_combo.blockSignals(False)
+        self._on_target_changed(self.target_combo.currentIndex())
+
+        QMessageBox.information(
+            self, APP_NAME,
+            f"Found {len(collections)} existing collection(s) in lazer.\n"
+            "They're now selectable in the 'Add maps to' dropdown."
+        )
+
+    def _fetch_existing_collections(
+        self, cm_cli_command: list[str], realm_path: Path,
+    ) -> list[CollectionInfo]:
+        """Run CM CLI to export client.realm to a temp .osdb and parse it."""
+        cm = CmCliRunner(CmCliConfig(
+            command=list(cm_cli_command),
+            osu_location=str(realm_path.parent),
+        ))
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".osdb", delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            cm.export_realm_to_osdb(realm_path, tmp)
+            return OsdbReader.read(tmp)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    # ----- recover realm ---------------------------------------------------
 
     def _on_recover_realm(self) -> None:
         """Restore client.realm from a .bak-<timestamp> snapshot."""
@@ -1495,8 +1643,25 @@ class MainWindow(QMainWindow):
             else:
                 cm_cli_cmd = raw.split()
 
-        modes = getattr(self.collision_combo, "_modes",
-                        ["merge", "skip", "rename"])
+        # Resolve the target collection choice into a single name override
+        # (or None if the user wants the default per-collection naming).
+        target_text = self.target_combo.currentText()
+        target_name: str | None = None
+        if add_to_lazer:
+            if target_text == self.NEW_TARGET:
+                new_name = self.new_name_edit.text().strip()
+                if not new_name:
+                    QMessageBox.warning(
+                        self, APP_NAME,
+                        "Pick a name for the new collection."
+                    )
+                    return
+                target_name = new_name
+            elif target_text and target_text != self.DEFAULT_TARGET:
+                # Pulled from existing list — use userData when present
+                # (the visible label has " (N maps)" appended).
+                ud = self.target_combo.currentData()
+                target_name = ud if ud else target_text
 
         job = DownloadJob(
             collection_ids=ids,
@@ -1510,7 +1675,7 @@ class MainWindow(QMainWindow):
             add_to_lazer_collections=add_to_lazer,
             cm_cli_command=cm_cli_cmd,
             lazer_realm_path=self.realm_edit.text().strip() or None,
-            on_name_collision=modes[self.collision_combo.currentIndex()],
+            target_collection_name=target_name,
             restart_lazer_after=self.restart_lazer_cb.isChecked(),
         )
 
