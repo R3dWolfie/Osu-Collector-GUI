@@ -1,6 +1,10 @@
 # Osu-Collector-GUI
 
+[![Build Windows .exe](https://github.com/R3dWolfie/Osu-Collector-GUI/actions/workflows/build-windows.yml/badge.svg)](https://github.com/R3dWolfie/Osu-Collector-GUI/actions/workflows/build-windows.yml)
+
 A simple cross-platform GUI for downloading [osu!collector](https://osucollector.com/) collections, with progress bars and optional auto-import to **osu!lazer**.
+
+> **Windows users**: pre-built `.exe` is on every [GitHub Actions](https://github.com/R3dWolfie/Osu-Collector-GUI/actions) run as a build artifact, and tagged releases get a published binary on the [Releases](https://github.com/R3dWolfie/Osu-Collector-GUI/releases) page.
 
 Talks to osu!collector's HTTP API directly and downloads `.osz` files from a public osu! mirror — no interactive prompting, no PTY hacks. Runs on **Linux**, **Windows**, and **macOS**.
 

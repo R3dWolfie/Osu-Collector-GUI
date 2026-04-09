@@ -1,0 +1,63 @@
+name: Build Windows .exe
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # also runnable manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --windowed --onefile `
+            --name osu-collector-gui `
+            osu_collector_gui.py
+
+      - name: Smoke test (binary exists and is non-empty)
+        shell: pwsh
+        run: |
+          $exe = "dist\osu-collector-gui.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $size = (Get-Item $exe).Length
+          if ($size -lt 1MB) { throw "$exe is suspiciously small ($size bytes)" }
+          Write-Host "Built $exe ($([math]::Round($size/1MB,1)) MB)"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: osu-collector-gui-windows
+          path: dist/osu-collector-gui.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      # On version tags (v1.0, v0.2.3, ...), also create a GitHub Release
+      # and attach the .exe.
+      - name: Create release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/osu-collector-gui.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
