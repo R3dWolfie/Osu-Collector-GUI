@@ -591,30 +591,47 @@ class CmCliRunner:
                 "-s"]
         self._run(argv)
 
-    @staticmethod
-    def _run(argv: list[str]) -> None:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=600,
-        )
+    DEBUG_LOG = Path("/tmp/oc-cm-cli-debug.log") if sys.platform != "win32" \
+        else Path(os.environ.get("TEMP", ".")) / "oc-cm-cli-debug.log"
+
+    @classmethod
+    def _run(cls, argv: list[str]) -> None:
+        # Always dump the full invocation + output to a debug log so we
+        # can actually see what CM CLI did, even when the GUI's error
+        # dialog truncates a multi-thousand-line wine register dump.
+        with cls.DEBUG_LOG.open("a", encoding="utf-8") as dlog:
+            dlog.write("\n" + "=" * 70 + "\n")
+            dlog.write(f"timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            dlog.write(f"argv: {shlex.join(argv)}\n")
+            dlog.flush()
+
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=600,
+                # Use a proper /dev/null for stdin so .NET doesn't
+                # block trying to read from a tty it doesn't have.
+                stdin=subprocess.DEVNULL,
+            )
+            dlog.write(f"exit: {proc.returncode}\n")
+            dlog.write(f"--- stdout ---\n{proc.stdout}\n")
+            dlog.write(f"--- stderr ---\n{proc.stderr}\n")
+            dlog.flush()
+
         if proc.returncode != 0:
-            # Trim wine's gigantic register dump out of the message —
-            # it's noise and pushes the actual .NET exception text off
-            # the top of the dialog. Keep just the human-readable lines
-            # before "Register dump:" or "Backtrace:".
+            # Trim wine's gigantic register dump out of the user-facing
+            # error — keep the human-readable preamble + a pointer to
+            # the debug log.
             stderr = proc.stderr or ""
             for marker in ("Unhandled exception:", "Register dump:", "Backtrace:"):
                 idx = stderr.find(marker)
                 if idx > 0:
-                    stderr = stderr[:idx].rstrip() + (
-                        f"\n  [...wine crash dump trimmed; full stderr is "
-                        f"{len(proc.stderr)} chars...]"
-                    )
+                    stderr = stderr[:idx].rstrip()
                     break
             raise RuntimeError(
                 f"CM CLI failed (exit {proc.returncode}):\n"
                 f"  cmd: {shlex.join(argv)}\n"
                 f"  stdout: {proc.stdout.strip()}\n"
-                f"  stderr: {stderr.strip()}"
+                f"  stderr: {stderr.strip()}\n"
+                f"\nFull invocation logged to {cls.DEBUG_LOG}"
             )
 
     @staticmethod
