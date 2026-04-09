@@ -948,6 +948,10 @@ class DownloadWorker(QObject):
         # the user can confirm osu!lazer has finished its async import
         # queue. Set by confirm_merge_continue() from the GUI thread.
         self._continue_merge_event = _t.Event()
+        # Set by _lazer_kill_if_running so the relaunch step can use the
+        # exact same binary the user had running, even if our standard
+        # search paths wouldn't find it.
+        self._discovered_lazer_exe: Path | None = None
         if job.auto_import and self.importer.binary:
             workers = max(1, min(8, job.import_parallel))
             self._import_executor = ThreadPoolExecutor(
@@ -1360,7 +1364,7 @@ class DownloadWorker(QObject):
             return False
 
         targets: list = []
-        for p in psutil.process_iter(attrs=["name", "exe"]):
+        for p in psutil.process_iter(attrs=["name", "exe", "cmdline"]):
             try:
                 name = (p.info.get("name") or "").lower()
                 exe = (p.info.get("exe") or "").lower()
@@ -1373,6 +1377,17 @@ class DownloadWorker(QObject):
 
         if not targets:
             return False
+
+        # Snapshot the exe path of the process we're about to kill so we
+        # can relaunch the SAME binary later — no guessing needed.
+        for p in targets:
+            try:
+                exe = p.info.get("exe")
+                if exe and Path(exe).exists():
+                    self._discovered_lazer_exe = Path(exe)
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
         self.log.emit(
             f"[lazer] terminating {len(targets)} osu!lazer process(es) "
@@ -1429,13 +1444,21 @@ class DownloadWorker(QObject):
         return True
 
     def _lazer_relaunch(self) -> None:
-        if not self.importer.binary:
+        # Prefer the exe path we snapshotted from the running process —
+        # that's guaranteed to be the user's actual binary, no
+        # heuristics needed.
+        binary = self._discovered_lazer_exe or self.importer.binary
+        if not binary:
             self.log.emit(
-                "[lazer] no binary path configured or auto-detect failed — "
+                "[lazer] no binary path discovered or configured — "
                 "skipping relaunch. Set 'osu!lazer binary' in the Tuning "
-                "section."
+                "section if you want auto-restart to work."
             )
             return
+        self.log.emit(f"[lazer] relaunching {binary}")
+        # Save the actual binary into the importer for any subsequent
+        # operations in this run.
+        self.importer.binary = binary
         try:
             kwargs: dict = dict(stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
