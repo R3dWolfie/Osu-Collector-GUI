@@ -392,18 +392,39 @@ class OsdbReader:
     def _read_byte(buf: io.BytesIO) -> int:
         return buf.read(1)[0]
 
+    _SUPPORTED_VERSIONS = {
+        "o!dm3": 3, "o!dm4": 4, "o!dm5": 5, "o!dm6": 6,
+        "o!dm7": 7, "o!dm8": 8,
+    }
+
     @classmethod
     def read(cls, src_path: Path) -> list[CollectionInfo]:
-        data = src_path.read_bytes()
-        buf = io.BytesIO(data)
+        raw = src_path.read_bytes()
+        buf = io.BytesIO(raw)
 
         magic = cls._read_string(buf)
-        if magic not in ("o!dm6", "o!dm5", "o!dm4", "o!dm3"):
-            # Compressed variants (o!dm7+) live in gzip — out of scope here.
+        if magic not in cls._SUPPORTED_VERSIONS:
             raise ValueError(
-                f"Unsupported .osdb version: {magic!r}. Only uncompressed "
-                "o!dm3..o!dm6 are supported by this reader."
+                f"Unsupported .osdb version: {magic!r}. Supported: "
+                f"{', '.join(sorted(cls._SUPPORTED_VERSIONS))}"
             )
+        version = cls._SUPPORTED_VERSIONS[magic]
+
+        # v7+ wraps the body in a gzip stream produced by SharpCompress's
+        # GZipArchive. Python's gzip module reads it fine — the SharpCompress
+        # filename header is part of the standard gzip envelope.
+        if version >= 7:
+            import gzip
+            try:
+                body = gzip.decompress(raw[buf.tell():])
+            except OSError as e:
+                raise ValueError(f"gzip decompress failed: {e}") from e
+            buf = io.BytesIO(body)
+            inner = cls._read_string(buf)
+            if inner not in cls._SUPPORTED_VERSIONS:
+                raise ValueError(
+                    f"Inner version mismatch: expected o!dm*, got {inner!r}"
+                )
 
         cls._read_double(buf)            # save date — ignored
         editor = cls._read_string(buf)
@@ -412,11 +433,14 @@ class OsdbReader:
         result: list[CollectionInfo] = []
         for _ in range(num_collections):
             name = cls._read_string(buf)
+            online_id = -1
+            if version >= 7:
+                online_id = cls._read_int32(buf)   # new field in v7+
             n_beatmaps = cls._read_int32(buf)
             beatmaps: list[BeatmapInfo] = []
             for _ in range(n_beatmaps):
                 bm_id = cls._read_int32(buf)
-                set_id = cls._read_int32(buf)
+                set_id = cls._read_int32(buf) if version >= 2 else 0
                 artist = cls._read_string(buf)
                 title = cls._read_string(buf)
                 diff = cls._read_string(buf)
@@ -429,15 +453,27 @@ class OsdbReader:
                     artist=artist, title=title, diff_name=diff,
                     mode=mode, star_rating=star,
                 ))
+
+            # Hash-only beatmaps (md5s without metadata). v3+ wrote this
+            # int32 marker; older versions ended the collection here.
+            if version >= 3:
+                n_hash_only = cls._read_int32(buf)
+                for _ in range(n_hash_only):
+                    h = cls._read_string(buf)
+                    if h:
+                        beatmaps.append(BeatmapInfo(
+                            beatmap_id=0, set_id=0, md5=h,
+                        ))
+
             result.append(CollectionInfo(
-                id=0, name=name, uploader=editor,
-                beatmap_count=n_beatmaps,
+                id=online_id if online_id > 0 else 0,
+                name=name,
+                uploader=editor,
+                beatmap_count=len(beatmaps),
                 beatmapset_ids=sorted({b.set_id for b in beatmaps if b.set_id}),
                 beatmaps=beatmaps,
             ))
 
-        # We don't validate the trailing "By Piotrekol" footer — some
-        # producers omit or alter it. The collection list is what we want.
         return result
 
 
@@ -893,8 +929,11 @@ class DownloadWorker(QObject):
             osu_location=str(realm_path.parent),
         ))
 
+        # Same wine-sandbox constraint as _fetch_existing_collections —
+        # CM CLI can only write to paths the wine flatpak can see, which
+        # in practice means the realm's own parent dir.
         self.log.emit("\n[lazer] exporting existing collections from realm...")
-        tmp_dir = Path(self.job.output_dir) / ".cm_tmp"
+        tmp_dir = realm_path.parent / ".oc-gui-tmp"
         tmp_dir.mkdir(exist_ok=True)
         existing_osdb = tmp_dir / "existing.osdb"
         try:
@@ -1445,16 +1484,33 @@ class MainWindow(QMainWindow):
     def _fetch_existing_collections(
         self, cm_cli_command: list[str], realm_path: Path,
     ) -> list[CollectionInfo]:
-        """Run CM CLI to export client.realm to a temp .osdb and parse it."""
+        """Run CM CLI to export client.realm to a temp .osdb and parse it.
+
+        IMPORTANT: when CM CLI is invoked through the wine flatpak, the
+        sandbox can only see directories explicitly granted to it
+        (typically just ~/.local/share/osu). A temp file in /tmp will be
+        silently dropped — wine can't write there. So we put the temp
+        next to client.realm instead, which is always accessible because
+        the user runs lazer with that directory mapped in.
+        """
         cm = CmCliRunner(CmCliConfig(
             command=list(cm_cli_command),
             osu_location=str(realm_path.parent),
         ))
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".osdb", delete=False) as f:
-            tmp = Path(f.name)
+        tmp = realm_path.parent / f".oc-gui-export-{os.getpid()}.osdb"
         try:
             cm.export_realm_to_osdb(realm_path, tmp)
+            if not tmp.exists() or tmp.stat().st_size == 0:
+                raise RuntimeError(
+                    "Collection Manager CLI exited without producing an "
+                    "output file. The most common cause on Linux is the "
+                    "wine flatpak sandbox not being able to write to the "
+                    "temp directory. The temp file path used here was:\n"
+                    f"  {tmp}\n"
+                    "If wine doesn't have access to that path, grant it "
+                    "with:\n"
+                    f"  flatpak override --user --filesystem={tmp.parent} org.winehq.Wine"
+                )
             return OsdbReader.read(tmp)
         finally:
             try:
