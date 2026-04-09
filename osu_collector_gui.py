@@ -336,34 +336,69 @@ class OsdbWriter:
                    editor: str | None = None) -> None:
         """Write one .osdb file containing one or more collections.
 
-        This is what makes 'merge into a single .osdb then re-import' work
-        without needing CM CLI's (nonexistent) merge command.
+        Writes o!dm8 format: an uncompressed "o!dm8" header followed by
+        a gzip-wrapped body. The body re-states the version string and
+        contains per-collection metadata + per-beatmap entries. CM CLI
+        only writes o!dm8 these days, so the v8 reader path is the
+        well-tested one — emitting v6 (uncompressed) hits an older code
+        path in CM that throws EndOfStreamException on perfectly valid
+        files.
+
+        Per-collection layout (v8):
+            string  name
+            int32   OnlineId (-1 if none)
+            int32   beatmap_count
+            for each beatmap:
+                int32  MapId
+                int32  MapSetId
+                string Artist
+                string Title
+                string DiffName
+                string Md5
+                string UserComment
+                byte   PlayMode
+                double StarRating
+            int32   hash_only_count
+            for each hash_only: string md5
+        Then a single trailing footer string "By Piotrekol".
         """
-        buf = io.BytesIO()
-        cls._write_string(buf, "o!dm6")
-        buf.write(struct.pack("<d", cls._to_oadate(datetime.now(timezone.utc))))
-        cls._write_string(buf, editor or (collections[0].uploader if collections else "Unknown"))
-        buf.write(struct.pack("<i", len(collections)))
+        body = io.BytesIO()
+        cls._write_string(body, "o!dm8")
+        body.write(struct.pack("<d", cls._to_oadate(datetime.now(timezone.utc))))
+        cls._write_string(body, editor or (collections[0].uploader if collections else "Unknown"))
+        body.write(struct.pack("<i", len(collections)))
 
         for info in collections:
-            cls._write_string(buf, info.name or "Unknown")
-            buf.write(struct.pack("<i", len(info.beatmaps)))
+            cls._write_string(body, info.name or "Unknown")
+            body.write(struct.pack("<i", info.id if info.id else -1))
+            body.write(struct.pack("<i", len(info.beatmaps)))
             for bm in info.beatmaps:
-                buf.write(struct.pack("<i", bm.beatmap_id))
-                buf.write(struct.pack("<i", bm.set_id))
-                cls._write_string(buf, bm.artist or "Unknown")
-                cls._write_string(buf, bm.title or "Unknown")
-                cls._write_string(buf, bm.diff_name or "Unknown")
-                cls._write_string(buf, bm.md5 or "")
-                cls._write_string(buf, "")  # user comment
-                buf.write(bytes([max(0, min(3, bm.mode))]))
-                buf.write(struct.pack("<d", float(bm.star_rating)))
+                body.write(struct.pack("<i", bm.beatmap_id))
+                body.write(struct.pack("<i", bm.set_id))
+                cls._write_string(body, bm.artist or "Unknown")
+                cls._write_string(body, bm.title or "Unknown")
+                cls._write_string(body, bm.diff_name or "Unknown")
+                cls._write_string(body, bm.md5 or "")
+                cls._write_string(body, "")  # user comment
+                body.write(bytes([max(0, min(3, bm.mode))]))
+                body.write(struct.pack("<d", float(bm.star_rating)))
+            body.write(struct.pack("<i", 0))   # no hash-only beatmaps
 
-        buf.write(struct.pack("<i", 0))   # no hash-only beatmaps
-        cls._write_string(buf, "By Piotrekol")
+        cls._write_string(body, "By Piotrekol")
+
+        # Wrap the body in a gzip stream. CM CLI uses SharpCompress's
+        # GZipArchive which produces a standard gzip envelope; Python's
+        # stdlib gzip is wire-compatible.
+        import gzip as _gz
+        compressed = _gz.compress(body.getvalue(), compresslevel=6)
+
+        # Final file: uncompressed "o!dm8" header + gzip stream.
+        out = io.BytesIO()
+        cls._write_string(out, "o!dm8")
+        out.write(compressed)
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(buf.getvalue())
+        dest_path.write_bytes(out.getvalue())
 
 
 class OsdbReader:
