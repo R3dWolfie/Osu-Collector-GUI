@@ -1079,29 +1079,37 @@ class DownloadWorker(QObject):
 
         cm = CmCliRunner(CmCliConfig(
             command=list(self.job.cm_cli_command),
-            osu_location=str(realm_path.parent),
+            osu_location=None,
         ))
 
-        # Kill lazer BEFORE we try to read its realm. Concurrent realm
-        # access from CM (which uses Realm.NET) and a running lazer (which
-        # holds a writer lock) has produced empty/corrupt exports in the
-        # past, leading to a destructive overwrite later in the merge.
-        was_running = self._lazer_kill_if_running()
+        # Read the existing collections via a SNAPSHOT copy, so lazer
+        # can stay open for now. Killing lazer is deferred to the
+        # write-back phase. (Realm is MVCC — a file-level copy gives
+        # us a consistent point-in-time snapshot of committed state.)
+        was_running = False  # filled in later, before the write-back
 
         # Same wine-sandbox constraint as _fetch_existing_collections —
         # CM CLI can only write to paths the wine flatpak can see, which
         # in practice means the realm's own parent dir.
-        self.log.emit("\n[lazer] exporting existing collections from realm...")
+        self.log.emit("\n[lazer] snapshotting realm and exporting existing collections...")
         tmp_dir = realm_path.parent / ".oc-gui-tmp"
         tmp_dir.mkdir(exist_ok=True)
+        snapshot_realm = tmp_dir / "snapshot.realm"
         existing_osdb = tmp_dir / "existing.osdb"
+
+        try:
+            shutil.copy2(realm_path, snapshot_realm)
+        except OSError as e:
+            raise RuntimeError(
+                f"Couldn't snapshot client.realm to {snapshot_realm}: {e}"
+            ) from e
 
         # FAIL-CLOSED: if we can't read the existing collections, ABORT.
         # Treating "couldn't read" as "you have no collections" would
         # cause CM CLI's destructive Write to nuke the realm — exactly
         # what happened in v0.4.0. Refuse to proceed instead.
         try:
-            cm.export_realm_to_osdb(realm_path, existing_osdb)
+            cm.export_realm_to_osdb(snapshot_realm, existing_osdb)
         except Exception as e:
             raise RuntimeError(
                 "CM CLI failed to export your existing lazer collections "
@@ -1794,23 +1802,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # CM's Realm.NET can't open client.realm while osu!lazer is
-        # running and holding a writer lock — it crashes with an
-        # unhandled CLR exception (0xe0434352). Warn + offer to close it.
-        if self._lazer_is_running():
-            ans = QMessageBox.question(
-                self, APP_NAME,
-                "osu!lazer is currently running and holds an exclusive "
-                "lock on client.realm. Collection Manager CLI cannot "
-                "read the realm while lazer has it open and will crash.\n\n"
-                "Close osu!lazer now and continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if ans != QMessageBox.StandardButton.Yes:
-                return
-            self._lazer_kill_running()
-            time.sleep(2)
-
         self.refresh_collections_btn.setEnabled(False)
         self.refresh_collections_btn.setText("Working…")
         QApplication.processEvents()
@@ -1858,37 +1849,46 @@ class MainWindow(QMainWindow):
     ) -> list[CollectionInfo]:
         """Run CM CLI to export client.realm to a temp .osdb and parse it.
 
-        IMPORTANT: when CM CLI is invoked through the wine flatpak, the
+        Strategy: copy the live client.realm to a sibling snapshot file,
+        then export from the snapshot. This lets osu!lazer stay open
+        (Realm uses MVCC so a file copy is a consistent point-in-time
+        snapshot of the committed state) and avoids the
+        Realm.NET 'realm in use' crash that fires when CM CLI tries to
+        open a file that another process already holds the writer lock
+        on.
+
+        IMPORTANT: when CM CLI runs through the wine flatpak, the
         sandbox can only see directories explicitly granted to it
-        (typically just ~/.local/share/osu). A temp file in /tmp will be
-        silently dropped — wine can't write there. So we put the temp
-        next to client.realm instead, which is always accessible because
-        the user runs lazer with that directory mapped in.
+        (typically just ~/.local/share/osu). Temp files in /tmp are
+        silently dropped — wine can't write there. So we keep the
+        snapshot + .osdb output next to the original realm.
         """
-        cm = CmCliRunner(CmCliConfig(
-            command=list(cm_cli_command),
-            osu_location=str(realm_path.parent),
-        ))
-        tmp = realm_path.parent / f".oc-gui-export-{os.getpid()}.osdb"
+        snapshot = realm_path.parent / f".oc-gui-snapshot-{os.getpid()}.realm"
+        out = realm_path.parent / f".oc-gui-export-{os.getpid()}.osdb"
         try:
-            cm.export_realm_to_osdb(realm_path, tmp)
-            if not tmp.exists() or tmp.stat().st_size == 0:
+            shutil.copy2(realm_path, snapshot)
+
+            cm = CmCliRunner(CmCliConfig(
+                command=list(cm_cli_command),
+                osu_location=None,
+            ))
+            cm.export_realm_to_osdb(snapshot, out)
+            if not out.exists() or out.stat().st_size == 0:
                 raise RuntimeError(
                     "Collection Manager CLI exited without producing an "
-                    "output file. The most common cause on Linux is the "
-                    "wine flatpak sandbox not being able to write to the "
-                    "temp directory. The temp file path used here was:\n"
-                    f"  {tmp}\n"
-                    "If wine doesn't have access to that path, grant it "
-                    "with:\n"
-                    f"  flatpak override --user --filesystem={tmp.parent} org.winehq.Wine"
+                    "output file. Most likely the wine flatpak sandbox "
+                    "couldn't write to:\n"
+                    f"  {out}\n"
+                    "Grant it explicitly with:\n"
+                    f"  flatpak override --user --filesystem={out.parent} org.winehq.Wine"
                 )
-            return OsdbReader.read(tmp)
+            return OsdbReader.read(out)
         finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            for p in (snapshot, out):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
     # ----- recover realm ---------------------------------------------------
 
