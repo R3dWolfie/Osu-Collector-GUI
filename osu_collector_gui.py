@@ -564,25 +564,31 @@ class CmCliRunner:
         self.cfg = cfg
 
     def export_realm_to_osdb(self, realm_path: Path, dest_osdb: Path) -> None:
-        """Read existing lazer collections out to a temp .osdb."""
+        """Read existing lazer collections out to a temp .osdb.
+
+        Always passes -s (SkipOsuLocation). When the input file is itself
+        a client.realm, also passing -l would make CM open the same realm
+        twice (once via LoadOsuDatabase, once via CollectionLoader),
+        which Realm.NET treats as a conflicting open and throws an
+        unhandled CLR exception (0xe0434352) under wine.
+        """
         argv = [*self.cfg.command, "convert",
                 "-i", str(realm_path),
-                "-o", str(dest_osdb)]
-        if self.cfg.osu_location:
-            argv += ["-l", self.cfg.osu_location]
-        else:
-            argv += ["-s"]   # SkipOsuLocation — input file is enough
+                "-o", str(dest_osdb),
+                "-s"]
         self._run(argv)
 
     def import_osdb_to_realm(self, src_osdb: Path, realm_path: Path) -> None:
-        """Overwrite client.realm with the collections from src_osdb."""
+        """Overwrite client.realm with the collections from src_osdb.
+
+        Same -s rationale as export. The input is a .osdb so there's no
+        double-realm-open risk, but we keep it consistent and avoid
+        loading the realm via -l (which would race with our own -o write).
+        """
         argv = [*self.cfg.command, "convert",
                 "-i", str(src_osdb),
-                "-o", str(realm_path)]
-        if self.cfg.osu_location:
-            argv += ["-l", self.cfg.osu_location]
-        else:
-            argv += ["-s"]
+                "-o", str(realm_path),
+                "-s"]
         self._run(argv)
 
     @staticmethod
@@ -591,11 +597,24 @@ class CmCliRunner:
             argv, capture_output=True, text=True, timeout=600,
         )
         if proc.returncode != 0:
+            # Trim wine's gigantic register dump out of the message —
+            # it's noise and pushes the actual .NET exception text off
+            # the top of the dialog. Keep just the human-readable lines
+            # before "Register dump:" or "Backtrace:".
+            stderr = proc.stderr or ""
+            for marker in ("Unhandled exception:", "Register dump:", "Backtrace:"):
+                idx = stderr.find(marker)
+                if idx > 0:
+                    stderr = stderr[:idx].rstrip() + (
+                        f"\n  [...wine crash dump trimmed; full stderr is "
+                        f"{len(proc.stderr)} chars...]"
+                    )
+                    break
             raise RuntimeError(
                 f"CM CLI failed (exit {proc.returncode}):\n"
-                f"  cmd: {' '.join(argv)}\n"
+                f"  cmd: {shlex.join(argv)}\n"
                 f"  stdout: {proc.stdout.strip()}\n"
-                f"  stderr: {proc.stderr.strip()}"
+                f"  stderr: {stderr.strip()}"
             )
 
     @staticmethod
