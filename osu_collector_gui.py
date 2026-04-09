@@ -856,6 +856,8 @@ class DownloadJob:
     lazer_realm_path: str | None = None      # path to client.realm
     target_collection_name: str | None = None  # if set, all maps go here
     restart_lazer_after: bool = False
+    # Post-import housekeeping
+    cleanup_after_import: bool = False       # delete <id> - <name>/ folders
 
 
 class DownloadWorker(QObject):
@@ -1038,8 +1040,86 @@ class DownloadWorker(QObject):
                 self._merge_into_lazer()
             except Exception as e:
                 self.error.emit(f"lazer collection merge failed: {e}")
+        elif self.job.auto_import and self._import_calls_issued > 0 and not self._cancelled:
+            # No merge step to gate cleanup behind, but we still need
+            # the user to confirm imports finished before deleting the
+            # source files lazer might still be reading.
+            self._continue_merge_event.clear()
+            self.awaiting_import_confirmation.emit(self._import_calls_issued)
+            self._continue_merge_event.wait(timeout=3600)
+
+        # --- cleanup per-collection folders ---
+        if self.job.cleanup_after_import and not self._cancelled:
+            try:
+                self._cleanup_collection_folders()
+            except Exception as e:
+                self.log.emit(f"[cleanup] failed: {e}")
 
         self.batch_finished.emit(ok_collections, total)
+
+    # ---- post-import cleanup ---------------------------------------------
+
+    def _cleanup_collection_folders(self) -> None:
+        """Delete the per-collection download folders, keeping everything
+        else (especially anything that looks like a Realm file).
+
+        Pattern matched: top-level dirs in output_dir whose name starts
+        with '<digits> - '. That's the convention osu-collector-dl uses
+        and what our worker creates. We refuse to delete:
+            - the /db subdirectory
+            - any file with .realm in its name (incl. backups)
+            - anything not a directory
+            - paths outside output_dir
+        """
+        out_dir = Path(self.job.output_dir).resolve()
+        if not out_dir.exists() or not out_dir.is_dir():
+            return
+
+        deleted = 0
+        kept = 0
+        for entry in out_dir.iterdir():
+            try:
+                # Hard safety: only descend into things directly inside
+                # out_dir, never follow symlinks pointing elsewhere.
+                if entry.is_symlink():
+                    kept += 1
+                    continue
+                if not entry.is_dir():
+                    kept += 1
+                    continue
+                if entry.name == "db":
+                    kept += 1
+                    continue
+                if entry.name.startswith("."):
+                    # Hidden temp dirs we manage ourselves (.cm_tmp, etc.)
+                    kept += 1
+                    continue
+                # Match the "<id> - <name>" pattern.
+                if not re.match(r"^\d+\s*[-–]\s*", entry.name):
+                    kept += 1
+                    continue
+                # Belt-and-braces: refuse if anything inside has .realm
+                # in its name.
+                contains_realm = False
+                for sub in entry.rglob("*.realm*"):
+                    contains_realm = True
+                    break
+                if contains_realm:
+                    self.log.emit(
+                        f"[cleanup] SKIP {entry.name}: contains a .realm file"
+                    )
+                    kept += 1
+                    continue
+
+                shutil.rmtree(entry)
+                deleted += 1
+            except OSError as e:
+                self.log.emit(f"[cleanup] couldn't remove {entry.name}: {e}")
+                kept += 1
+
+        self.log.emit(
+            f"[cleanup] removed {deleted} collection folder(s), kept {kept} other entr(ies)"
+        )
 
     # ---- lazer collection merge ------------------------------------------
 
@@ -1390,6 +1470,20 @@ class MainWindow(QMainWindow):
         )
         self.consolidate_cb.setChecked(self.settings.get("consolidate_osdb", True))
         what_layout.addWidget(self.consolidate_cb)
+
+        self.cleanup_cb = QCheckBox(
+            "Delete per-collection download folders after import is done "
+            "(saves disk; lazer already has its own copies)"
+        )
+        self.cleanup_cb.setChecked(self.settings.get("cleanup_after_import", True))
+        self.cleanup_cb.setToolTip(
+            "Once you've confirmed osu!lazer finished importing the maps,\n"
+            "deletes the '<id> - <name>' folders that contain the .osz\n"
+            "files. The /db subfolder, .osdb files, and anything that\n"
+            "looks like a Realm file are NEVER touched."
+        )
+        what_layout.addWidget(self.cleanup_cb)
+
         layout.addWidget(what_group)
 
         # --- tuning ---
@@ -1602,6 +1696,7 @@ class MainWindow(QMainWindow):
             "generate_osdb": self.generate_osdb_cb.isChecked(),
             "auto_import": self.auto_import_cb.isChecked(),
             "consolidate_osdb": self.consolidate_cb.isChecked(),
+            "cleanup_after_import": self.cleanup_cb.isChecked(),
             "import_parallel": self.import_parallel_spin.value(),
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
@@ -2108,6 +2203,7 @@ class MainWindow(QMainWindow):
             lazer_realm_path=self.realm_edit.text().strip() or None,
             target_collection_name=target_name,
             restart_lazer_after=self.restart_lazer_cb.isChecked(),
+            cleanup_after_import=self.cleanup_cb.isChecked(),
         )
 
         self.thread = QThread()
