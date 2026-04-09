@@ -316,32 +316,281 @@ class OsdbWriter:
                 "OsdbWriter requires per-beatmap details — call "
                 "fetch_collection(..., with_beatmap_details=True) first."
             )
+        cls.write_many(dest_path, [info])
 
+    @classmethod
+    def write_many(cls, dest_path: Path,
+                   collections: list[CollectionInfo],
+                   editor: str | None = None) -> None:
+        """Write one .osdb file containing one or more collections.
+
+        This is what makes 'merge into a single .osdb then re-import' work
+        without needing CM CLI's (nonexistent) merge command.
+        """
         buf = io.BytesIO()
         cls._write_string(buf, "o!dm6")
         buf.write(struct.pack("<d", cls._to_oadate(datetime.now(timezone.utc))))
-        cls._write_string(buf, info.uploader or "Unknown")
-        buf.write(struct.pack("<i", 1))   # always 1 collection per .osdb
+        cls._write_string(buf, editor or (collections[0].uploader if collections else "Unknown"))
+        buf.write(struct.pack("<i", len(collections)))
 
-        cls._write_string(buf, info.name or "Unknown")
-        buf.write(struct.pack("<i", len(info.beatmaps)))
-
-        for bm in info.beatmaps:
-            buf.write(struct.pack("<i", bm.beatmap_id))
-            buf.write(struct.pack("<i", bm.set_id))
-            cls._write_string(buf, bm.artist or "Unknown")
-            cls._write_string(buf, bm.title or "Unknown")
-            cls._write_string(buf, bm.diff_name or "Unknown")
-            cls._write_string(buf, bm.md5 or "")
-            cls._write_string(buf, "")  # user comment
-            buf.write(bytes([max(0, min(3, bm.mode))]))
-            buf.write(struct.pack("<d", float(bm.star_rating)))
+        for info in collections:
+            cls._write_string(buf, info.name or "Unknown")
+            buf.write(struct.pack("<i", len(info.beatmaps)))
+            for bm in info.beatmaps:
+                buf.write(struct.pack("<i", bm.beatmap_id))
+                buf.write(struct.pack("<i", bm.set_id))
+                cls._write_string(buf, bm.artist or "Unknown")
+                cls._write_string(buf, bm.title or "Unknown")
+                cls._write_string(buf, bm.diff_name or "Unknown")
+                cls._write_string(buf, bm.md5 or "")
+                cls._write_string(buf, "")  # user comment
+                buf.write(bytes([max(0, min(3, bm.mode))]))
+                buf.write(struct.pack("<d", float(bm.star_rating)))
 
         buf.write(struct.pack("<i", 0))   # no hash-only beatmaps
         cls._write_string(buf, "By Piotrekol")
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(buf.getvalue())
+
+
+class OsdbReader:
+    """Inverse of OsdbWriter — parses an o!dm6 .osdb file back into
+    CollectionInfo dataclasses. Used to round-trip existing lazer
+    collections through CM CLI for non-destructive merging.
+    """
+
+    @staticmethod
+    def _read_7bit_int(buf: io.BytesIO) -> int:
+        result = 0
+        shift = 0
+        for _ in range(5):  # max 5 bytes for a 32-bit int
+            b = buf.read(1)
+            if not b:
+                raise EOFError("unexpected end of .osdb")
+            byte = b[0]
+            result |= (byte & 0x7F) << shift
+            if (byte & 0x80) == 0:
+                return result
+            shift += 7
+        raise ValueError("malformed 7-bit int in .osdb")
+
+    @classmethod
+    def _read_string(cls, buf: io.BytesIO) -> str:
+        length = cls._read_7bit_int(buf)
+        return buf.read(length).decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _read_int32(buf: io.BytesIO) -> int:
+        return struct.unpack("<i", buf.read(4))[0]
+
+    @staticmethod
+    def _read_double(buf: io.BytesIO) -> float:
+        return struct.unpack("<d", buf.read(8))[0]
+
+    @staticmethod
+    def _read_byte(buf: io.BytesIO) -> int:
+        return buf.read(1)[0]
+
+    @classmethod
+    def read(cls, src_path: Path) -> list[CollectionInfo]:
+        data = src_path.read_bytes()
+        buf = io.BytesIO(data)
+
+        magic = cls._read_string(buf)
+        if magic not in ("o!dm6", "o!dm5", "o!dm4", "o!dm3"):
+            # Compressed variants (o!dm7+) live in gzip — out of scope here.
+            raise ValueError(
+                f"Unsupported .osdb version: {magic!r}. Only uncompressed "
+                "o!dm3..o!dm6 are supported by this reader."
+            )
+
+        cls._read_double(buf)            # save date — ignored
+        editor = cls._read_string(buf)
+        num_collections = cls._read_int32(buf)
+
+        result: list[CollectionInfo] = []
+        for _ in range(num_collections):
+            name = cls._read_string(buf)
+            n_beatmaps = cls._read_int32(buf)
+            beatmaps: list[BeatmapInfo] = []
+            for _ in range(n_beatmaps):
+                bm_id = cls._read_int32(buf)
+                set_id = cls._read_int32(buf)
+                artist = cls._read_string(buf)
+                title = cls._read_string(buf)
+                diff = cls._read_string(buf)
+                md5 = cls._read_string(buf)
+                cls._read_string(buf)        # user comment — ignored
+                mode = cls._read_byte(buf)
+                star = cls._read_double(buf)
+                beatmaps.append(BeatmapInfo(
+                    beatmap_id=bm_id, set_id=set_id, md5=md5,
+                    artist=artist, title=title, diff_name=diff,
+                    mode=mode, star_rating=star,
+                ))
+            result.append(CollectionInfo(
+                id=0, name=name, uploader=editor,
+                beatmap_count=n_beatmaps,
+                beatmapset_ids=sorted({b.set_id for b in beatmaps if b.set_id}),
+                beatmaps=beatmaps,
+            ))
+
+        # We don't validate the trailing "By Piotrekol" footer — some
+        # producers omit or alter it. The collection list is what we want.
+        return result
+
+
+def merge_collection_lists(
+    *lists: list[CollectionInfo],
+    on_name_collision: str = "merge",
+) -> list[CollectionInfo]:
+    """Merge several lists of CollectionInfo into one.
+
+    on_name_collision:
+        "merge"  — combine beatmaps from same-named collections (deduped by md5)
+        "skip"   — skip the new collection if a name already exists (keep old)
+        "rename" — append a numeric suffix to the new collection's name
+    """
+    by_name: dict[str, CollectionInfo] = {}
+    order: list[str] = []
+
+    for lst in lists:
+        for c in lst:
+            key = c.name.strip()
+            if key not in by_name:
+                by_name[key] = CollectionInfo(
+                    id=c.id, name=c.name, uploader=c.uploader,
+                    beatmap_count=len(c.beatmaps),
+                    beatmapset_ids=list(c.beatmapset_ids),
+                    beatmaps=list(c.beatmaps),
+                )
+                order.append(key)
+                continue
+
+            if on_name_collision == "merge":
+                existing = by_name[key]
+                seen = {b.md5 for b in existing.beatmaps if b.md5}
+                for b in c.beatmaps:
+                    if b.md5 and b.md5 not in seen:
+                        existing.beatmaps.append(b)
+                        seen.add(b.md5)
+                existing.beatmap_count = len(existing.beatmaps)
+            elif on_name_collision == "skip":
+                continue
+            elif on_name_collision == "rename":
+                n = 2
+                new_key = f"{key} ({n})"
+                while new_key in by_name:
+                    n += 1
+                    new_key = f"{key} ({n})"
+                renamed = CollectionInfo(
+                    id=c.id, name=new_key, uploader=c.uploader,
+                    beatmap_count=len(c.beatmaps),
+                    beatmapset_ids=list(c.beatmapset_ids),
+                    beatmaps=list(c.beatmaps),
+                )
+                by_name[new_key] = renamed
+                order.append(new_key)
+
+    return [by_name[k] for k in order]
+
+
+# ---------------------------------------------------------------------------
+# CollectionManager CLI runner
+# ---------------------------------------------------------------------------
+#
+# We invoke CM CLI to round-trip existing lazer collections through .osdb,
+# merge in our new collections in Python, and re-import. CM does NOT have a
+# native merge command — its `convert` overwrites — so we do the merging
+# ourselves and use CM purely as a Realm <-> .osdb codec.
+
+@dataclass
+class CmCliConfig:
+    command: list[str]          # full argv prefix to invoke CM CLI
+    osu_location: str | None    # passed via -l (auto-detect if None)
+
+
+class CmCliRunner:
+    def __init__(self, cfg: CmCliConfig) -> None:
+        self.cfg = cfg
+
+    def export_realm_to_osdb(self, realm_path: Path, dest_osdb: Path) -> None:
+        """Read existing lazer collections out to a temp .osdb."""
+        argv = [*self.cfg.command, "convert",
+                "-i", str(realm_path),
+                "-o", str(dest_osdb)]
+        if self.cfg.osu_location:
+            argv += ["-l", self.cfg.osu_location]
+        else:
+            argv += ["-s"]   # SkipOsuLocation — input file is enough
+        self._run(argv)
+
+    def import_osdb_to_realm(self, src_osdb: Path, realm_path: Path) -> None:
+        """Overwrite client.realm with the collections from src_osdb."""
+        argv = [*self.cfg.command, "convert",
+                "-i", str(src_osdb),
+                "-o", str(realm_path)]
+        if self.cfg.osu_location:
+            argv += ["-l", self.cfg.osu_location]
+        else:
+            argv += ["-s"]
+        self._run(argv)
+
+    @staticmethod
+    def _run(argv: list[str]) -> None:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=600,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"CM CLI failed (exit {proc.returncode}):\n"
+                f"  cmd: {' '.join(argv)}\n"
+                f"  stdout: {proc.stdout.strip()}\n"
+                f"  stderr: {proc.stderr.strip()}"
+            )
+
+    @staticmethod
+    def autodetect() -> CmCliConfig | None:
+        """Best-effort auto-detection of CM CLI on Linux/Windows."""
+        if sys.platform == "win32":
+            home = Path.home()
+            candidates = [
+                home / "AppData/Local/Programs/Collection Manager/CollectionManager.App.Cli.exe",
+                Path("C:/Program Files/Collection Manager/CollectionManager.App.Cli.exe"),
+            ]
+            for p in candidates:
+                if p.exists():
+                    return CmCliConfig(command=[str(p)], osu_location=None)
+            return None
+
+        # Linux: most common install is the Wine flatpak prefix.
+        wine_exe = (
+            Path.home()
+            / ".var/app/org.winehq.Wine/data/wine/drive_c/users"
+            / os.environ.get("USER", "red")
+            / "AppData/Local/Programs/Collection Manager/CollectionManager.App.Cli.exe"
+        )
+        if wine_exe.exists():
+            # Run via flatpak's wine. Use the Windows-style path; the wine
+            # entry point converts \ properly.
+            win_path = (
+                "C:\\users\\"
+                + os.environ.get("USER", "red")
+                + "\\AppData\\Local\\Programs\\Collection Manager"
+                + "\\CollectionManager.App.Cli.exe"
+            )
+            return CmCliConfig(
+                command=["flatpak", "run", "org.winehq.Wine", win_path],
+                osu_location=None,
+            )
+
+        # Native CM CLI build (rare on Linux but possible)
+        for p in (Path("/usr/local/bin/CollectionManager.App.Cli"),
+                  Path("/usr/bin/CollectionManager.App.Cli")):
+            if p.exists():
+                return CmCliConfig(command=[str(p)], osu_location=None)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +702,12 @@ class DownloadJob:
     import_parallel: int = 1            # 1..8 — concurrent import calls
     import_delay_ms: int = 0            # min delay between import calls
     mirror_url: str = DEFAULT_MIRROR
+    # Lazer collection merging via CM CLI
+    add_to_lazer_collections: bool = False
+    cm_cli_command: list[str] | None = None  # full argv prefix
+    lazer_realm_path: str | None = None      # path to client.realm
+    on_name_collision: str = "merge"          # merge|skip|rename
+    restart_lazer_after: bool = False
 
 
 class DownloadWorker(QObject):
@@ -610,7 +865,139 @@ class DownloadWorker(QObject):
         if self._import_executor:
             self._import_executor.shutdown(wait=True)
 
+        # --- merge into lazer collections via CM CLI ---
+        if self.job.add_to_lazer_collections and not self._cancelled:
+            try:
+                self._merge_into_lazer()
+            except Exception as e:
+                self.error.emit(f"lazer collection merge failed: {e}")
+
         self.batch_finished.emit(ok_collections, total)
+
+    # ---- lazer collection merge ------------------------------------------
+
+    def _merge_into_lazer(self) -> None:
+        if not self.job.cm_cli_command:
+            raise RuntimeError(
+                "Collection Manager CLI not configured. Set its path in "
+                "the GUI's 'Lazer collections' section."
+            )
+        if not self.job.lazer_realm_path:
+            raise RuntimeError("lazer client.realm path not configured.")
+        realm_path = Path(self.job.lazer_realm_path).expanduser()
+        if not realm_path.exists():
+            raise FileNotFoundError(f"client.realm not found at {realm_path}")
+
+        cm = CmCliRunner(CmCliConfig(
+            command=list(self.job.cm_cli_command),
+            osu_location=str(realm_path.parent),
+        ))
+
+        self.log.emit("\n[lazer] exporting existing collections from realm...")
+        tmp_dir = Path(self.job.output_dir) / ".cm_tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        existing_osdb = tmp_dir / "existing.osdb"
+        try:
+            cm.export_realm_to_osdb(realm_path, existing_osdb)
+            existing = OsdbReader.read(existing_osdb)
+            self.log.emit(f"[lazer] {len(existing)} existing collection(s) loaded")
+        except Exception as e:
+            self.log.emit(f"[lazer] couldn't read existing collections ({e}); "
+                          "treating as empty")
+            existing = []
+
+        # Collect every .osdb we generated this run.
+        new_collections: list[CollectionInfo] = []
+        for f in Path(self.job.output_dir).rglob("*.osdb"):
+            # Skip our own temp dir
+            if tmp_dir in f.parents:
+                continue
+            try:
+                new_collections.extend(OsdbReader.read(f))
+            except Exception as e:
+                self.log.emit(f"[lazer] skip unreadable {f.name}: {e}")
+
+        if not new_collections:
+            self.log.emit("[lazer] no new collections to merge — skipping")
+            return
+
+        merged = merge_collection_lists(
+            existing, new_collections,
+            on_name_collision=self.job.on_name_collision,
+        )
+        self.log.emit(
+            f"[lazer] merged result: {len(merged)} collection(s) "
+            f"(existing {len(existing)} + new {len(new_collections)} → {len(merged)})"
+        )
+
+        merged_osdb = tmp_dir / "merged.osdb"
+        OsdbWriter.write_many(merged_osdb, merged, editor="osu-collector-gui")
+
+        # Backup the realm before overwriting — paranoia is justified here.
+        backup = realm_path.with_suffix(
+            realm_path.suffix + f".bak-{int(time.time())}"
+        )
+        try:
+            shutil.copy2(realm_path, backup)
+            self.log.emit(f"[lazer] backed up realm to {backup.name}")
+        except OSError as e:
+            self.log.emit(f"[lazer] WARNING: couldn't back up realm: {e}")
+
+        # Lazer must NOT be running while CM rewrites client.realm.
+        was_running = self._lazer_kill_if_running()
+        try:
+            self.log.emit("[lazer] writing merged collections back to realm...")
+            cm.import_osdb_to_realm(merged_osdb, realm_path)
+            self.log.emit("[lazer] done.")
+        finally:
+            try:
+                shutil.rmtree(tmp_dir)
+            except OSError:
+                pass
+
+        if self.job.restart_lazer_after or was_running:
+            self._lazer_relaunch()
+
+    def _lazer_kill_if_running(self) -> bool:
+        try:
+            import psutil
+        except ImportError:
+            return False
+        killed = False
+        for p in psutil.process_iter(attrs=["name", "exe"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                exe = (p.info.get("exe") or "").lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if ("osu!" in name or "osu.exe" in name
+                    or name.startswith("osu_")
+                    or "osu!.exe" in exe):
+                try:
+                    p.terminate()
+                    killed = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        if killed:
+            self.log.emit("[lazer] terminated running osu!lazer instance")
+            time.sleep(2)
+        return killed
+
+    def _lazer_relaunch(self) -> None:
+        if not self.importer or not self.importer.binary:
+            self.log.emit("[lazer] no binary path configured — not relaunching")
+            return
+        try:
+            kwargs: dict = dict(stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+            if sys.platform == "win32":
+                kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen([str(self.importer.binary)], **kwargs)
+            self.log.emit("[lazer] relaunched osu!lazer")
+        except OSError as e:
+            self.log.emit(f"[lazer] relaunch failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +1121,72 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(tune_group)
 
+        # --- lazer collection merging via Collection Manager CLI ---
+        lazer_group = QGroupBox("Add downloaded maps to osu!lazer collections")
+        lazer_form = QFormLayout(lazer_group)
+
+        self.add_to_lazer_cb = QCheckBox(
+            "Merge generated .osdb files into osu!lazer's collection database"
+        )
+        self.add_to_lazer_cb.setChecked(
+            self.settings.get("add_to_lazer_collections", False)
+        )
+        self.add_to_lazer_cb.setToolTip(
+            "Uses Collection Manager CLI to round-trip your existing\n"
+            "lazer collections + the new ones into a merged client.realm.\n"
+            "Requires Collection Manager installed.\n"
+            "osu!lazer will be terminated during the merge and (optionally)\n"
+            "relaunched afterwards."
+        )
+        lazer_form.addRow(self.add_to_lazer_cb)
+
+        cm_row = QHBoxLayout()
+        self.cm_cli_edit = QLineEdit(self.settings.get("cm_cli_command", ""))
+        self.cm_cli_edit.setPlaceholderText(
+            "(auto-detect: wine flatpak or native CM CLI)"
+        )
+        cm_detect = QPushButton("Auto-detect")
+        cm_detect.clicked.connect(self._on_detect_cm)
+        cm_row.addWidget(self.cm_cli_edit)
+        cm_row.addWidget(cm_detect)
+        cm_w = QWidget(); cm_w.setLayout(cm_row)
+        lazer_form.addRow("CM CLI command:", cm_w)
+
+        realm_row = QHBoxLayout()
+        self.realm_edit = QLineEdit(self.settings.get(
+            "lazer_realm_path",
+            str(Path.home() / ".local/share/osu/client.realm"),
+        ))
+        realm_browse = QPushButton("Browse…")
+        realm_browse.clicked.connect(self._on_browse_realm)
+        realm_row.addWidget(self.realm_edit)
+        realm_row.addWidget(realm_browse)
+        realm_w = QWidget(); realm_w.setLayout(realm_row)
+        lazer_form.addRow("client.realm:", realm_w)
+
+        from PyQt6.QtWidgets import QComboBox
+        self.collision_combo = QComboBox()
+        self.collision_combo.addItems([
+            "merge — combine beatmaps into existing collection",
+            "skip — keep existing, don't add anything",
+            "rename — append (2), (3)… to the new one",
+        ])
+        modes = ["merge", "skip", "rename"]
+        saved = self.settings.get("on_name_collision", "merge")
+        self.collision_combo.setCurrentIndex(modes.index(saved) if saved in modes else 0)
+        self.collision_combo._modes = modes  # type: ignore
+        lazer_form.addRow("If a collection name already exists:", self.collision_combo)
+
+        self.restart_lazer_cb = QCheckBox(
+            "Restart osu!lazer after merging (otherwise just leave it closed)"
+        )
+        self.restart_lazer_cb.setChecked(
+            self.settings.get("restart_lazer_after", True)
+        )
+        lazer_form.addRow(self.restart_lazer_cb)
+
+        layout.addWidget(lazer_group)
+
         # --- progress ---
         prog_group = QGroupBox("Progress")
         prog_layout = QVBoxLayout(prog_group)
@@ -779,6 +1232,8 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        modes = getattr(self.collision_combo, "_modes",
+                        ["merge", "skip", "rename"])
         CONFIG_FILE.write_text(json.dumps({
             "last_output_dir": self.dir_edit.text(),
             "download_beatmaps": self.download_beatmaps_cb.isChecked(),
@@ -788,6 +1243,11 @@ class MainWindow(QMainWindow):
             "import_parallel": self.import_parallel_spin.value(),
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
+            "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
+            "cm_cli_command": self.cm_cli_edit.text(),
+            "lazer_realm_path": self.realm_edit.text(),
+            "on_name_collision": modes[self.collision_combo.currentIndex()],
+            "restart_lazer_after": self.restart_lazer_cb.isChecked(),
         }, indent=2))
 
     # ----- event handlers --------------------------------------------------
@@ -820,6 +1280,28 @@ class MainWindow(QMainWindow):
         if path:
             self.osu_path_edit.setText(path)
 
+    def _on_detect_cm(self) -> None:
+        cfg = CmCliRunner.autodetect()
+        if cfg is None:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Couldn't auto-detect Collection Manager CLI.\n\n"
+                "Install it from https://github.com/Piotrekol/CollectionManager "
+                "or paste the full invocation command yourself."
+            )
+            return
+        # Persist as a single space-joined string the user can edit.
+        self.cm_cli_edit.setText(" ".join(cfg.command))
+
+    def _on_browse_realm(self) -> None:
+        start = self.realm_edit.text() or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate client.realm", start,
+            "Realm DB (client.realm);;All files (*)"
+        )
+        if path:
+            self.realm_edit.setText(path)
+
     def _on_start(self) -> None:
         ids = self._parse_ids(self.ids_edit.toPlainText())
         if not ids:
@@ -844,6 +1326,36 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Validate the lazer-merge config if the user enabled it.
+        add_to_lazer = self.add_to_lazer_cb.isChecked()
+        cm_cli_cmd: list[str] | None = None
+        if add_to_lazer:
+            if not self.generate_osdb_cb.isChecked():
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    "Adding to osu!lazer collections requires .osdb generation. "
+                    "Tick 'Generate .osdb files' too."
+                )
+                return
+            raw = self.cm_cli_edit.text().strip()
+            if not raw:
+                cfg = CmCliRunner.autodetect()
+                if cfg is None:
+                    QMessageBox.warning(
+                        self, APP_NAME,
+                        "Collection Manager CLI not found. Set its path "
+                        "in the 'Lazer collections' section, or untick "
+                        "'Merge generated .osdb files…'."
+                    )
+                    return
+                cm_cli_cmd = cfg.command
+                self.cm_cli_edit.setText(" ".join(cfg.command))
+            else:
+                cm_cli_cmd = raw.split()
+
+        modes = getattr(self.collision_combo, "_modes",
+                        ["merge", "skip", "rename"])
+
         job = DownloadJob(
             collection_ids=ids,
             output_dir=out_dir,
@@ -853,6 +1365,11 @@ class MainWindow(QMainWindow):
             osu_binary=self.osu_path_edit.text().strip() or None,
             import_parallel=self.import_parallel_spin.value(),
             import_delay_ms=self.import_delay_spin.value(),
+            add_to_lazer_collections=add_to_lazer,
+            cm_cli_command=cm_cli_cmd,
+            lazer_realm_path=self.realm_edit.text().strip() or None,
+            on_name_collision=modes[self.collision_combo.currentIndex()],
+            restart_lazer_after=self.restart_lazer_cb.isChecked(),
         )
 
         self.thread = QThread()
