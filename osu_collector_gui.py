@@ -57,7 +57,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.4.0"
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+https://github.com/R3dWolfie/Osu-Collector-GUI)"
 
 OSU_COLLECTOR_API = "https://osucollector.com/api"
@@ -1284,7 +1284,17 @@ class MainWindow(QMainWindow):
         lazer_form.addRow(self.add_to_lazer_cb)
 
         cm_row = QHBoxLayout()
-        self.cm_cli_edit = QLineEdit(self.settings.get("cm_cli_command", ""))
+        # cm_cli_command is stored as a list in settings (canonical), but
+        # the QLineEdit shows a shell-quoted string for editing convenience.
+        # Legacy: an older version stored it as a raw space-joined string,
+        # which broke for paths with spaces. We silently discard those —
+        # the user just needs to click Auto-detect once.
+        _saved_cmd = self.settings.get("cm_cli_command", [])
+        if isinstance(_saved_cmd, list) and _saved_cmd:
+            _saved_cmd_text = shlex.join(_saved_cmd)
+        else:
+            _saved_cmd_text = ""
+        self.cm_cli_edit = QLineEdit(_saved_cmd_text)
         self.cm_cli_edit.setPlaceholderText(
             "(auto-detect: wine flatpak or native CM CLI)"
         )
@@ -1407,6 +1417,16 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Persist cm_cli_command as a list, never a string. The QLineEdit
+        # text is parsed once on save so the canonical form on disk is
+        # quote-safe.
+        cm_text = self.cm_cli_edit.text().strip()
+        cm_list: list[str] = []
+        if cm_text:
+            try:
+                cm_list = shlex.split(cm_text)
+            except ValueError:
+                cm_list = cm_text.split()
         CONFIG_FILE.write_text(json.dumps({
             "last_output_dir": self.dir_edit.text(),
             "download_beatmaps": self.download_beatmaps_cb.isChecked(),
@@ -1417,7 +1437,7 @@ class MainWindow(QMainWindow):
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
             "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
-            "cm_cli_command": self.cm_cli_edit.text(),
+            "cm_cli_command": cm_list,
             "lazer_realm_path": self.realm_edit.text(),
             "target_collection": self.target_combo.currentText(),
             "new_collection_name": self.new_name_edit.text(),
