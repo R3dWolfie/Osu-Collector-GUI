@@ -8,6 +8,11 @@ on:
     branches: [main]
   workflow_dispatch:   # also runnable manually from the Actions tab
 
+# Grant the workflow's GITHUB_TOKEN permission to create releases.
+# Default token permissions are read-only on modern repos.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
