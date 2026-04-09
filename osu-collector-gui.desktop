@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=osu! Collector Downloader
+GenericName=Beatmap Collection Downloader
+Comment=Download collections from osucollector.com
+Exec=python3 /home/red/Projects/Osu-Collector-GUI/osu_collector_gui.py
+Icon=download
+Terminal=false
+Categories=Game;Network;
+StartupNotify=true
