@@ -1021,6 +1021,12 @@ class DownloadWorker(QObject):
             osu_location=str(realm_path.parent),
         ))
 
+        # Kill lazer BEFORE we try to read its realm. Concurrent realm
+        # access from CM (which uses Realm.NET) and a running lazer (which
+        # holds a writer lock) has produced empty/corrupt exports in the
+        # past, leading to a destructive overwrite later in the merge.
+        was_running = self._lazer_kill_if_running()
+
         # Same wine-sandbox constraint as _fetch_existing_collections —
         # CM CLI can only write to paths the wine flatpak can see, which
         # in practice means the realm's own parent dir.
@@ -1028,14 +1034,54 @@ class DownloadWorker(QObject):
         tmp_dir = realm_path.parent / ".oc-gui-tmp"
         tmp_dir.mkdir(exist_ok=True)
         existing_osdb = tmp_dir / "existing.osdb"
+
+        # FAIL-CLOSED: if we can't read the existing collections, ABORT.
+        # Treating "couldn't read" as "you have no collections" would
+        # cause CM CLI's destructive Write to nuke the realm — exactly
+        # what happened in v0.4.0. Refuse to proceed instead.
         try:
             cm.export_realm_to_osdb(realm_path, existing_osdb)
-            existing = OsdbReader.read(existing_osdb)
-            self.log.emit(f"[lazer] {len(existing)} existing collection(s) loaded")
         except Exception as e:
-            self.log.emit(f"[lazer] couldn't read existing collections ({e}); "
-                          "treating as empty")
-            existing = []
+            raise RuntimeError(
+                "CM CLI failed to export your existing lazer collections "
+                "from client.realm. Aborting before any destructive write — "
+                "your collections are untouched.\n\nUnderlying error: "
+                f"{e}"
+            ) from e
+
+        if not existing_osdb.exists() or existing_osdb.stat().st_size == 0:
+            raise RuntimeError(
+                "CM CLI exported a 0-byte or missing file when reading "
+                "your existing lazer collections. Aborting before any "
+                "destructive write — your collections are untouched.\n\n"
+                f"Expected file: {existing_osdb}"
+            )
+
+        try:
+            existing = OsdbReader.read(existing_osdb)
+        except Exception as e:
+            raise RuntimeError(
+                "Couldn't parse the .osdb that CM CLI exported from your "
+                "realm. Aborting before any destructive write — your "
+                "collections are untouched.\n\nParser error: "
+                f"{e}\nFile: {existing_osdb} ({existing_osdb.stat().st_size} bytes)"
+            ) from e
+
+        self.log.emit(f"[lazer] {len(existing)} existing collection(s) loaded")
+
+        # Belt-and-braces sanity check: if the realm is non-trivial in size
+        # but we got back zero collections, something is wrong — refuse to
+        # write rather than risk wiping a collection database that just
+        # happened to parse weirdly.
+        realm_size = realm_path.stat().st_size
+        if not existing and realm_size > 1024 * 1024:
+            raise RuntimeError(
+                f"client.realm is {realm_size // 1024 // 1024} MB but the "
+                "export contained zero collections. This usually means the "
+                "export tool is incompatible with your lazer/realm version. "
+                "Aborting before any destructive write — your collections "
+                "are untouched."
+            )
 
         # Collect every .osdb we generated this run.
         new_collections: list[CollectionInfo] = []
@@ -1086,8 +1132,12 @@ class DownloadWorker(QObject):
         except OSError as e:
             self.log.emit(f"[lazer] WARNING: couldn't back up realm: {e}")
 
-        # Lazer must NOT be running while CM rewrites client.realm.
-        was_running = self._lazer_kill_if_running()
+        # Lazer must NOT be running while CM rewrites client.realm. We
+        # already killed it at the start of this method; this second
+        # check catches any auto-restart that may have happened in the
+        # meantime (e.g. some launchers respawn it).
+        if self._lazer_kill_if_running():
+            was_running = True
         try:
             self.log.emit("[lazer] writing merged collections back to realm...")
             cm.import_osdb_to_realm(merged_osdb, realm_path)
