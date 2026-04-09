@@ -46,6 +46,8 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -1534,7 +1536,11 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}")
-        self.setMinimumSize(720, 600)
+        # Comfortable default that fits all the form rows without scrolling.
+        # The minimum is much smaller because the central widget is wrapped
+        # in a QScrollArea — users can shrink the window and scroll.
+        self.resize(900, 950)
+        self.setMinimumSize(520, 400)
 
         self.thread: QThread | None = None
         self.worker: DownloadWorker | None = None
@@ -1545,7 +1551,17 @@ class MainWindow(QMainWindow):
     # ----- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
+        # The central widget is a QScrollArea wrapping a regular QWidget.
+        # This is the only sane way to host this many form rows without
+        # the QFormLayout collapsing rows or clipping fields when the
+        # window is at minimum size.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         root = QWidget()
+        root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(root)
 
         # --- collection IDs ---
@@ -1623,6 +1639,8 @@ class MainWindow(QMainWindow):
         # --- tuning ---
         tune_group = QGroupBox("Tuning")
         tune_form = QFormLayout(tune_group)
+        tune_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        tune_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.import_parallel_spin = QSpinBox()
         self.import_parallel_spin.setRange(1, 8)
@@ -1664,6 +1682,8 @@ class MainWindow(QMainWindow):
         # --- lazer collection merging via Collection Manager CLI ---
         lazer_group = QGroupBox("Add downloaded maps to osu!lazer collections")
         lazer_form = QFormLayout(lazer_group)
+        lazer_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        lazer_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.add_to_lazer_cb = QCheckBox(
             "Merge generated .osdb files into osu!lazer's collection database"
@@ -1802,7 +1822,8 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.start_btn)
         layout.addLayout(btn_layout)
 
-        self.setCentralWidget(root)
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
 
     # ----- settings persistence -------------------------------------------
 
