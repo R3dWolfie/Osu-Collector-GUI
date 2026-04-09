@@ -952,6 +952,10 @@ class DownloadWorker(QObject):
         # exact same binary the user had running, even if our standard
         # search paths wouldn't find it.
         self._discovered_lazer_exe: Path | None = None
+        # .osdb files we wrote during this run, so the merge step picks
+        # up only the new ones — not stale .osdb files left over from
+        # previous batches in the same output directory.
+        self._generated_osdb_files: list[Path] = []
         if job.auto_import and self.importer.binary:
             workers = max(1, min(8, job.import_parallel))
             self._import_executor = ThreadPoolExecutor(
@@ -1043,6 +1047,7 @@ class DownloadWorker(QObject):
                 try:
                     osdb_path = col_dir / f"{safe_name}.osdb"
                     OsdbWriter.write(osdb_path, info)
+                    self._generated_osdb_files.append(osdb_path)
                     self.log.emit(f"  [.osdb] {osdb_path.name}")
                 except Exception as e:
                     self.log.emit(f"  [.osdb error] {e}")
@@ -1289,11 +1294,14 @@ class DownloadWorker(QObject):
                 "are untouched."
             )
 
-        # Collect every .osdb we generated this run.
+        # Collect ONLY .osdb files we generated this run. Previously we
+        # rglob'd output_dir which picked up stale .osdb files from
+        # earlier batches and silently merged them, producing way more
+        # collections than the user actually downloaded.
         new_collections: list[CollectionInfo] = []
-        for f in Path(self.job.output_dir).rglob("*.osdb"):
-            # Skip our own temp dir
-            if tmp_dir in f.parents:
+        for f in self._generated_osdb_files:
+            if not f.exists():
+                self.log.emit(f"[lazer] WARN: generated {f.name} is missing")
                 continue
             try:
                 new_collections.extend(OsdbReader.read(f))
@@ -1380,11 +1388,45 @@ class DownloadWorker(QObject):
 
         # Snapshot the exe path of the process we're about to kill so we
         # can relaunch the SAME binary later — no guessing needed.
+        # AppImages are special: psutil.exe returns /tmp/.mount_<hash>/...
+        # which is unmounted the moment the AppImage exits. We need the
+        # original .AppImage path. Order of preference:
+        #   1. $APPIMAGE env var (set by every AppImage runtime)
+        #   2. cmdline[0] if it's a .AppImage file
+        #   3. /proc/PID/exe (works for non-AppImage installs)
         for p in targets:
             try:
-                exe = p.info.get("exe")
-                if exe and Path(exe).exists():
-                    self._discovered_lazer_exe = Path(exe)
+                discovered: Path | None = None
+
+                # 1. APPIMAGE env var — the canonical path
+                try:
+                    env = p.environ()
+                    appimage = env.get("APPIMAGE")
+                    if appimage and Path(appimage).exists():
+                        discovered = Path(appimage)
+                except (psutil.NoSuchProcess, psutil.AccessDenied,
+                        FileNotFoundError, OSError):
+                    pass
+
+                # 2. cmdline[0] — what the user actually invoked
+                if discovered is None:
+                    cmdline = p.info.get("cmdline") or []
+                    if cmdline:
+                        c0 = Path(cmdline[0]).expanduser()
+                        if c0.exists() and (
+                            c0.suffix.lower() == ".appimage"
+                            or "osu" in c0.name.lower()
+                        ):
+                            discovered = c0
+
+                # 3. exe symlink — only if it points somewhere persistent
+                if discovered is None:
+                    exe = p.info.get("exe")
+                    if exe and Path(exe).exists() and "/.mount_" not in exe:
+                        discovered = Path(exe)
+
+                if discovered is not None:
+                    self._discovered_lazer_exe = discovered
                     break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
