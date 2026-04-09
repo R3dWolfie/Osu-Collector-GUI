@@ -77,6 +77,16 @@ CONFIG_DIR = Path.home() / (
 ) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 
+CACHE_DIR = Path.home() / (
+    ".cache" if sys.platform != "win32" else "AppData/Local"
+) / APP_NAME
+CM_CLI_CACHE_DIR = CACHE_DIR / "cm-cli"
+
+CM_CLI_RELEASE_URL = (
+    "https://github.com/Piotrekol/CollectionManager/releases/latest/"
+    "download/CollectionManager-CLI.zip"
+)
+
 
 # ---------------------------------------------------------------------------
 # osu!collector API client
@@ -588,19 +598,28 @@ class CmCliRunner:
 
     @staticmethod
     def autodetect() -> CmCliConfig | None:
-        """Best-effort auto-detection of CM CLI on Linux/Windows."""
+        """Best-effort auto-detection of CM CLI on Linux/Windows.
+
+        Search order:
+            1. Standard install locations (Squirrel installer, Program Files,
+               wine flatpak prefix)
+            2. The cache dir populated by CmCliInstaller (auto-downloaded
+               from CM's GitHub releases)
+        """
         if sys.platform == "win32":
             home = Path.home()
             candidates = [
                 home / "AppData/Local/Programs/Collection Manager/CollectionManager.App.Cli.exe",
                 Path("C:/Program Files/Collection Manager/CollectionManager.App.Cli.exe"),
+                CM_CLI_CACHE_DIR / "CollectionManager.App.Cli.exe",
             ]
             for p in candidates:
                 if p.exists():
                     return CmCliConfig(command=[str(p)], osu_location=None)
             return None
 
-        # Linux: most common install is the Wine flatpak prefix.
+        # Linux: try the wine flatpak install first (the most common
+        # setup), then the auto-downloaded cache running through wine.
         wine_exe = (
             Path.home()
             / ".var/app/org.winehq.Wine/data/wine/drive_c/users"
@@ -608,8 +627,6 @@ class CmCliRunner:
             / "AppData/Local/Programs/Collection Manager/CollectionManager.App.Cli.exe"
         )
         if wine_exe.exists():
-            # Run via flatpak's wine. Use the Windows-style path; the wine
-            # entry point converts \ properly.
             win_path = (
                 "C:\\users\\"
                 + os.environ.get("USER", "red")
@@ -621,12 +638,86 @@ class CmCliRunner:
                 osu_location=None,
             )
 
-        # Native CM CLI build (rare on Linux but possible)
+        # Auto-downloaded copy in our cache dir, run via wine flatpak
+        # (wine needs filesystem permission for the cache dir — we grant
+        # it once during install).
+        cached = CM_CLI_CACHE_DIR / "CollectionManager.App.Cli.exe"
+        if cached.exists() and shutil.which("flatpak"):
+            # Wine flatpak prefers Z: drive paths for unix files.
+            wine_path = "Z:" + str(cached).replace("/", "\\")
+            return CmCliConfig(
+                command=["flatpak", "run", "org.winehq.Wine", wine_path],
+                osu_location=None,
+            )
+
+        # Last-ditch: native build on a system that has one.
         for p in (Path("/usr/local/bin/CollectionManager.App.Cli"),
                   Path("/usr/bin/CollectionManager.App.Cli")):
             if p.exists():
                 return CmCliConfig(command=[str(p)], osu_location=None)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Auto-installer for Collection Manager CLI
+# ---------------------------------------------------------------------------
+
+class CmCliInstaller:
+    """Downloads CM CLI from its GitHub releases into our cache dir.
+
+    The release zip is small (~3.6 MB) and self-contained — a single
+    .exe + a native realm-wrappers.dll. Works natively on Windows and
+    via wine on Linux.
+    """
+
+    @staticmethod
+    def installed_exe() -> Path | None:
+        exe = CM_CLI_CACHE_DIR / "CollectionManager.App.Cli.exe"
+        return exe if exe.exists() else None
+
+    @staticmethod
+    def install(log_func=print) -> Path:
+        """Download + extract latest CM CLI release. Returns the .exe path."""
+        import urllib.request
+        import zipfile
+
+        CM_CLI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        log_func(f"Downloading {CM_CLI_RELEASE_URL}...")
+
+        req = urllib.request.Request(
+            CM_CLI_RELEASE_URL, headers={"User-Agent": USER_AGENT}
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read()
+        log_func(f"Downloaded {len(data) // 1024} KiB, extracting...")
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            zf.extractall(CM_CLI_CACHE_DIR)
+
+        exe = CM_CLI_CACHE_DIR / "CollectionManager.App.Cli.exe"
+        if not exe.exists():
+            raise RuntimeError(
+                "CM CLI zip extracted but expected exe not found at "
+                f"{exe}. The release archive layout may have changed."
+            )
+
+        # On Linux, grant the wine flatpak permission to read the cache
+        # directory so it can actually find the exe. This is a no-op if
+        # the override is already set, and harmless if wine isn't installed.
+        if sys.platform != "win32" and shutil.which("flatpak"):
+            try:
+                subprocess.run(
+                    ["flatpak", "override", "--user",
+                     f"--filesystem={CM_CLI_CACHE_DIR}",
+                     "org.winehq.Wine"],
+                    check=False, capture_output=True, timeout=10,
+                )
+                log_func(f"Granted wine flatpak access to {CM_CLI_CACHE_DIR}")
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        log_func(f"Installed CM CLI: {exe}")
+        return exe
 
 
 # ---------------------------------------------------------------------------
@@ -1364,16 +1455,50 @@ class MainWindow(QMainWindow):
 
     def _on_detect_cm(self) -> None:
         cfg = CmCliRunner.autodetect()
+        if cfg is not None:
+            self.cm_cli_edit.setText(" ".join(cfg.command))
+            return
+
+        # Nothing found locally — offer to download from GitHub releases.
+        ans = QMessageBox.question(
+            self, APP_NAME,
+            "Collection Manager CLI was not found in any standard "
+            "location.\n\n"
+            "Download the latest release (~4 MB) from "
+            "github.com/Piotrekol/CollectionManager into "
+            f"{CM_CLI_CACHE_DIR} ?\n\n"
+            "On Linux this also runs:\n"
+            f"  flatpak override --user --filesystem={CM_CLI_CACHE_DIR} org.winehq.Wine\n"
+            "so the wine sandbox can read it.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        QApplication.processEvents()
+        try:
+            CmCliInstaller.install(log_func=lambda s: None)
+        except Exception as e:
+            QMessageBox.critical(
+                self, APP_NAME,
+                f"Failed to install Collection Manager CLI:\n\n{e}"
+            )
+            return
+
+        cfg = CmCliRunner.autodetect()
         if cfg is None:
             QMessageBox.warning(
                 self, APP_NAME,
-                "Couldn't auto-detect Collection Manager CLI.\n\n"
-                "Install it from https://github.com/Piotrekol/CollectionManager "
-                "or paste the full invocation command yourself."
+                "Install completed but the auto-detector still can't find "
+                f"CM CLI in {CM_CLI_CACHE_DIR}. Open an issue with this "
+                "message."
             )
             return
-        # Persist as a single space-joined string the user can edit.
         self.cm_cli_edit.setText(" ".join(cfg.command))
+        QMessageBox.information(
+            self, APP_NAME,
+            f"Installed Collection Manager CLI to {CM_CLI_CACHE_DIR}."
+        )
 
     def _on_browse_realm(self) -> None:
         start = self.realm_edit.text() or str(Path.home())
