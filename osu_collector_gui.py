@@ -847,6 +847,10 @@ class DownloadWorker(QObject):
     collection_finished = pyqtSignal(int, int, int)      # idx, ok, total
     batch_finished = pyqtSignal(int, int)                # ok_collections, total_collections
     error = pyqtSignal(str)
+    # Asks the GUI thread to put up a "did imports finish?" dialog and
+    # wait for the user before we proceed with the destructive merge.
+    # Payload is the number of import calls we issued during the batch.
+    awaiting_import_confirmation = pyqtSignal(int)
 
     def __init__(self, job: DownloadJob) -> None:
         super().__init__()
@@ -864,6 +868,11 @@ class DownloadWorker(QObject):
         self._import_lock = _t.Lock()
         self._last_import_ts = 0.0
         self._import_executor: ThreadPoolExecutor | None = None
+        self._import_calls_issued = 0
+        # Event used to pause the worker before the destructive merge so
+        # the user can confirm osu!lazer has finished its async import
+        # queue. Set by confirm_merge_continue() from the GUI thread.
+        self._continue_merge_event = _t.Event()
         if self.importer and self.importer.binary:
             workers = max(1, min(8, job.import_parallel))
             self._import_executor = ThreadPoolExecutor(
@@ -873,8 +882,17 @@ class DownloadWorker(QObject):
 
     def cancel(self) -> None:
         self._cancelled = True
+        # Unblock any thread waiting on the merge confirmation gate so
+        # it can notice the cancel and exit cleanly.
+        self._continue_merge_event.set()
         if self._import_executor:
             self._import_executor.shutdown(wait=False, cancel_futures=True)
+
+    def confirm_merge_continue(self) -> None:
+        """Called from the GUI thread when the user clicks OK on the
+        'did osu!lazer finish importing?' dialog. Releases the worker
+        from its wait at the start of _merge_into_lazer."""
+        self._continue_merge_event.set()
 
     # ---- helpers ----------------------------------------------------------
 
@@ -898,6 +916,7 @@ class DownloadWorker(QObject):
             return
         try:
             self._import_executor.submit(self._do_import, path)
+            self._import_calls_issued += 1
         except RuntimeError:
             # Pool may have been shut down on cancel.
             pass
@@ -1010,6 +1029,28 @@ class DownloadWorker(QObject):
                 "Collection Manager CLI not configured. Set its path in "
                 "the GUI's 'Lazer collections' section."
             )
+
+        # If we issued any auto-import calls, lazer is doing async work
+        # in the background — extracting .osz files, hashing beatmaps,
+        # writing to client.realm. We must wait until that's done, or
+        # the merge will kill lazer mid-import and lose data. Lazer
+        # doesn't expose a "queue empty" signal, so we ask the user.
+        if self._import_calls_issued > 0:
+            self.log.emit(
+                f"\n[lazer] {self._import_calls_issued} auto-import call(s) "
+                "were issued. Waiting for user confirmation that osu!lazer "
+                "has finished importing them before touching client.realm..."
+            )
+            self._continue_merge_event.clear()
+            self.awaiting_import_confirmation.emit(self._import_calls_issued)
+            # Long but bounded wait — 1h cap so a forgotten dialog
+            # doesn't leak the worker thread forever.
+            self._continue_merge_event.wait(timeout=3600)
+            if self._cancelled:
+                self.log.emit("[lazer] cancelled while waiting for import "
+                              "confirmation")
+                return
+            self.log.emit("[lazer] user confirmed; proceeding with merge")
         if not self.job.lazer_realm_path:
             raise RuntimeError("lazer client.realm path not configured.")
         realm_path = Path(self.job.lazer_realm_path).expanduser()
@@ -1948,6 +1989,9 @@ class MainWindow(QMainWindow):
         self.worker.collection_finished.connect(self._on_collection_finished)
         self.worker.batch_finished.connect(self._on_batch_finished)
         self.worker.error.connect(lambda msg: self._append_log(f"ERROR: {msg}"))
+        self.worker.awaiting_import_confirmation.connect(
+            self._on_awaiting_import_confirmation
+        )
 
         self.thread.started.connect(self.worker.run)
         self.thread.start()
@@ -1999,6 +2043,39 @@ class MainWindow(QMainWindow):
 
     def _on_collection_finished(self, idx: int, ok: int, total: int) -> None:
         self.col_progress.setValue(idx)
+
+    def _on_awaiting_import_confirmation(self, n_imports: int) -> None:
+        """Modal prompt: 'has osu!lazer finished importing the maps?'
+
+        Until the user clicks OK, the worker is blocked at the start of
+        _merge_into_lazer. Clicking Cancel aborts the whole batch.
+        """
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle(APP_NAME)
+        msg.setText("Has osu!lazer finished importing the downloaded maps?")
+        msg.setInformativeText(
+            f"{n_imports} map(s) were sent to osu!lazer for import.\n\n"
+            "osu!lazer processes imports asynchronously — it may still be "
+            "extracting and hashing beatmaps in the background.\n\n"
+            "Open osu!lazer and check that the import notifications have "
+            "all finished, then click 'Continue merge'.\n\n"
+            "WARNING: clicking Continue while imports are still in flight "
+            "will terminate osu!lazer mid-import and the unfinished maps "
+            "will not end up in the merged collection."
+        )
+        cont = msg.addButton("Continue merge", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("Cancel batch", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(cont)
+        msg.exec()
+
+        if msg.clickedButton() is cont:
+            if self.worker:
+                self.worker.confirm_merge_continue()
+        else:
+            if self.worker:
+                self.worker.cancel()
+            self._append_log("[cancelled by user before merge]")
 
     def _on_batch_finished(self, ok: int, total: int) -> None:
         self._append_log(f"\n[done — {ok}/{total} collections succeeded]")
