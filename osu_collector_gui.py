@@ -1641,6 +1641,50 @@ class MainWindow(QMainWindow):
         if path:
             self.realm_edit.setText(path)
 
+    # ----- shared lazer process helpers (used by refresh + recover) -------
+
+    @staticmethod
+    def _lazer_is_running() -> bool:
+        try:
+            import psutil
+        except ImportError:
+            return False
+        for p in psutil.process_iter(attrs=["name", "exe"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                exe = (p.info.get("exe") or "").lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if ("osu!" in name or "osu.exe" in name
+                    or name.startswith("osu_")
+                    or "osu!.exe" in exe):
+                return True
+        return False
+
+    @staticmethod
+    def _lazer_kill_running() -> int:
+        """Terminate any running osu!lazer process. Returns count killed."""
+        try:
+            import psutil
+        except ImportError:
+            return 0
+        killed = 0
+        for p in psutil.process_iter(attrs=["name", "exe"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                exe = (p.info.get("exe") or "").lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if ("osu!" in name or "osu.exe" in name
+                    or name.startswith("osu_")
+                    or "osu!.exe" in exe):
+                try:
+                    p.terminate()
+                    killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        return killed
+
     # ----- target collection picker ---------------------------------------
 
     DEFAULT_TARGET = "(default — one lazer collection per osu!collector collection)"
@@ -1699,6 +1743,23 @@ class MainWindow(QMainWindow):
                 "full invocation into the CM CLI command field."
             )
             return
+
+        # CM's Realm.NET can't open client.realm while osu!lazer is
+        # running and holding a writer lock — it crashes with an
+        # unhandled CLR exception (0xe0434352). Warn + offer to close it.
+        if self._lazer_is_running():
+            ans = QMessageBox.question(
+                self, APP_NAME,
+                "osu!lazer is currently running and holds an exclusive "
+                "lock on client.realm. Collection Manager CLI cannot "
+                "read the realm while lazer has it open and will crash.\n\n"
+                "Close osu!lazer now and continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            self._lazer_kill_running()
+            time.sleep(2)
 
         self.refresh_collections_btn.setEnabled(False)
         self.refresh_collections_btn.setText("Working…")
