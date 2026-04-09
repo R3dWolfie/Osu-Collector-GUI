@@ -932,10 +932,11 @@ class DownloadWorker(QObject):
         self._cancelled = False
         self.api = OsuCollectorClient()
         self.mirror = BeatmapMirror(primary=job.mirror_url)
-        self.importer = (
-            OsuLazerImporter(binary_override=job.osu_binary)
-            if job.auto_import else None
-        )
+        # Always construct the importer so we know the lazer binary path
+        # for the post-merge restart, even if auto_import is off. The
+        # _maybe_import path checks job.auto_import before actually
+        # invoking it, so this is purely about knowing the binary.
+        self.importer = OsuLazerImporter(binary_override=job.osu_binary)
         # Import throttling state, guarded by a lock so multiple worker
         # threads can share it cleanly.
         import threading as _t
@@ -947,7 +948,7 @@ class DownloadWorker(QObject):
         # the user can confirm osu!lazer has finished its async import
         # queue. Set by confirm_merge_continue() from the GUI thread.
         self._continue_merge_event = _t.Event()
-        if self.importer and self.importer.binary:
+        if job.auto_import and self.importer.binary:
             workers = max(1, min(8, job.import_parallel))
             self._import_executor = ThreadPoolExecutor(
                 max_workers=workers,
@@ -972,7 +973,7 @@ class DownloadWorker(QObject):
 
     def _do_import(self, path: Path) -> None:
         """Run on an import-pool worker; handles delay throttling."""
-        if not self.importer or not self.importer.binary:
+        if not self.job.auto_import or not self.importer.binary:
             return
         if self.job.import_delay_ms > 0:
             with self._import_lock:
@@ -1428,8 +1429,12 @@ class DownloadWorker(QObject):
         return True
 
     def _lazer_relaunch(self) -> None:
-        if not self.importer or not self.importer.binary:
-            self.log.emit("[lazer] no binary path configured — not relaunching")
+        if not self.importer.binary:
+            self.log.emit(
+                "[lazer] no binary path configured or auto-detect failed — "
+                "skipping relaunch. Set 'osu!lazer binary' in the Tuning "
+                "section."
+            )
             return
         try:
             kwargs: dict = dict(stdout=subprocess.DEVNULL,
