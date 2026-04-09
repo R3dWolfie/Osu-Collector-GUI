@@ -1185,6 +1185,20 @@ class MainWindow(QMainWindow):
         )
         lazer_form.addRow(self.restart_lazer_cb)
 
+        # Recovery row — restore client.realm from a previous backup.
+        recover_row = QHBoxLayout()
+        self.recover_btn = QPushButton("Recover realm from backup…")
+        self.recover_btn.setToolTip(
+            "Restore client.realm from a .bak-<timestamp> snapshot taken\n"
+            "before a previous merge. osu!lazer will be terminated first\n"
+            "and the current realm itself will also be backed up before\n"
+            "the restore, so this action is reversible."
+        )
+        self.recover_btn.clicked.connect(self._on_recover_realm)
+        recover_row.addStretch()
+        recover_row.addWidget(self.recover_btn)
+        lazer_form.addRow(recover_row)
+
         layout.addWidget(lazer_group)
 
         # --- progress ---
@@ -1301,6 +1315,134 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.realm_edit.setText(path)
+
+    def _on_recover_realm(self) -> None:
+        """Restore client.realm from a .bak-<timestamp> snapshot."""
+        realm_str = self.realm_edit.text().strip()
+        if not realm_str:
+            QMessageBox.warning(self, APP_NAME,
+                                "Set the client.realm path first.")
+            return
+        realm = Path(realm_str).expanduser()
+        if not realm.parent.exists():
+            QMessageBox.critical(
+                self, APP_NAME,
+                f"Directory does not exist:\n{realm.parent}"
+            )
+            return
+
+        # List available backups (any file matching client.realm.bak-*).
+        backups = sorted(
+            realm.parent.glob(realm.name + ".bak-*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not backups:
+            QMessageBox.information(
+                self, APP_NAME,
+                f"No backups found in {realm.parent}.\n\n"
+                f"Backups are created automatically (named "
+                f"'{realm.name}.bak-<timestamp>') the first time you merge "
+                "collections into lazer. None exist yet."
+            )
+            return
+
+        # Build a friendly picker with timestamps + sizes.
+        items: list[str] = []
+        for b in backups:
+            ts = datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            mb = b.stat().st_size / (1024 * 1024)
+            items.append(f"{b.name}    ({ts}, {mb:.1f} MB)")
+        items.append("Browse for a file…")
+
+        from PyQt6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self, "Recover realm",
+            f"Pick a backup to restore over:\n{realm}",
+            items, 0, False,
+        )
+        if not ok or not choice:
+            return
+
+        if choice == "Browse for a file…":
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Pick backup realm", str(realm.parent),
+                "Realm backup (*.bak-* *.realm);;All files (*)"
+            )
+            if not path:
+                return
+            chosen = Path(path)
+        else:
+            chosen = backups[items.index(choice)]
+
+        if not chosen.exists():
+            QMessageBox.critical(self, APP_NAME, f"Backup file gone: {chosen}")
+            return
+
+        # Confirm with full details.
+        confirm = QMessageBox.question(
+            self, APP_NAME,
+            f"Restore client.realm from this backup?\n\n"
+            f"  source: {chosen}\n"
+            f"  target: {realm}\n\n"
+            f"osu!lazer will be terminated first. The current realm will "
+            f"itself be backed up to {realm.name}.before-recover-<timestamp> "
+            f"so you can undo.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        # Kill any running lazer.
+        try:
+            import psutil
+            for p in psutil.process_iter(attrs=["name", "exe"]):
+                try:
+                    name = (p.info.get("name") or "").lower()
+                    exe = (p.info.get("exe") or "").lower()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+                if ("osu!" in name or "osu.exe" in name
+                        or name.startswith("osu_")
+                        or "osu!.exe" in exe):
+                    try:
+                        p.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            time.sleep(2)
+        except ImportError:
+            pass
+
+        # Take a safety copy of the current state before overwriting.
+        try:
+            if realm.exists():
+                ts = int(time.time())
+                safety = realm.with_suffix(realm.suffix + f".before-recover-{ts}")
+                shutil.copy2(realm, safety)
+        except OSError as e:
+            r = QMessageBox.warning(
+                self, APP_NAME,
+                f"Couldn't back up the current realm before restoring:\n{e}\n\n"
+                "Continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+
+        # The actual restore.
+        try:
+            shutil.copy2(chosen, realm)
+        except OSError as e:
+            QMessageBox.critical(
+                self, APP_NAME,
+                f"Restore failed:\n{e}"
+            )
+            return
+
+        QMessageBox.information(
+            self, APP_NAME,
+            f"Restored {realm.name} from {chosen.name}.\n\n"
+            "You can launch osu!lazer normally now."
+        )
 
     def _on_start(self) -> None:
         ids = self._parse_ids(self.ids_edit.toPlainText())
