@@ -13,14 +13,18 @@ Runs on Linux, Windows, and macOS. Single file. Bundle for Windows with:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -31,6 +35,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -40,7 +45,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -62,7 +67,7 @@ FALLBACK_MIRRORS = [
 ]
 
 # Network limits — be polite to the mirrors
-MAX_PARALLEL_DOWNLOADS = 4
+DOWNLOAD_PARALLEL = 4   # how many .osz fetches in parallel within a collection
 DOWNLOAD_TIMEOUT_S = 120
 HTTP_RETRIES = 3
 HTTP_BACKOFF_S = 2
@@ -78,12 +83,28 @@ CONFIG_FILE = CONFIG_DIR / "settings.json"
 # ---------------------------------------------------------------------------
 
 @dataclass
+class BeatmapInfo:
+    beatmap_id: int
+    set_id: int
+    md5: str
+    artist: str = "Unknown"
+    title: str = "Unknown"
+    diff_name: str = "Unknown"
+    mode: int = 0          # 0=osu, 1=taiko, 2=fruits, 3=mania
+    star_rating: float = 0.0
+
+
+@dataclass
 class CollectionInfo:
     id: int
     name: str
     uploader: str
     beatmap_count: int
     beatmapset_ids: list[int] = field(default_factory=list)
+    beatmaps: list[BeatmapInfo] = field(default_factory=list)
+
+
+_MODE_TO_INT = {"osu": 0, "taiko": 1, "fruits": 2, "catch": 2, "mania": 3}
 
 
 class OsuCollectorClient:
@@ -91,8 +112,14 @@ class OsuCollectorClient:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
 
-    def fetch_collection(self, collection_id: int) -> CollectionInfo:
-        """Fetch collection metadata + flat list of beatmapset IDs."""
+    def fetch_collection(self, collection_id: int,
+                         with_beatmap_details: bool = False) -> CollectionInfo:
+        """Fetch collection metadata + flat list of beatmapset IDs.
+
+        If with_beatmap_details is True, also fetches per-beatmap details
+        (artist, title, diff name, mode, star rating, md5) needed for
+        .osdb generation. Costs extra paginated API calls.
+        """
         url = f"{OSU_COLLECTOR_API}/collections/{collection_id}"
         r = self.session.get(url, timeout=30)
         if r.status_code == 404:
@@ -110,13 +137,46 @@ class OsuCollectorClient:
                 seen.add(sid)
                 set_ids.append(sid)
 
-        return CollectionInfo(
+        info = CollectionInfo(
             id=int(data["id"]),
             name=str(data.get("name") or f"Collection {collection_id}"),
             uploader=str((data.get("uploader") or {}).get("username") or "?"),
             beatmap_count=int(data.get("beatmapCount") or len(set_ids)),
             beatmapset_ids=set_ids,
         )
+
+        if with_beatmap_details:
+            info.beatmaps = self._fetch_beatmaps_paged(collection_id)
+        return info
+
+    def _fetch_beatmaps_paged(self, collection_id: int) -> list[BeatmapInfo]:
+        """Page through /beatmapsv2 to get details for every beatmap."""
+        out: list[BeatmapInfo] = []
+        cursor = "0"
+        for _ in range(500):  # safety bound — most collections fit in <50 pages
+            url = (f"{OSU_COLLECTOR_API}/collections/{collection_id}/beatmapsv2"
+                   f"?perPage=100&cursor={cursor}")
+            r = self.session.get(url, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            for b in data.get("beatmaps", []) or []:
+                bs = b.get("beatmapset") or {}
+                out.append(BeatmapInfo(
+                    beatmap_id=int(b.get("id") or 0),
+                    set_id=int(b.get("beatmapset_id") or bs.get("id") or 0),
+                    md5=str(b.get("checksum") or ""),
+                    artist=str(bs.get("artist") or "Unknown"),
+                    title=str(bs.get("title") or "Unknown"),
+                    diff_name=str(b.get("version") or "Unknown"),
+                    mode=_MODE_TO_INT.get(str(b.get("mode") or "osu").lower(), 0),
+                    star_rating=float(b.get("difficulty_rating") or 0.0),
+                ))
+            if not data.get("hasMore"):
+                break
+            cursor = str(data.get("nextPageCursor") or "")
+            if not cursor:
+                break
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -194,14 +254,109 @@ def _safe_filename(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# .osdb file writer  (Collection Manager / osu!collector compatible)
+# ---------------------------------------------------------------------------
+#
+# Format reference: roogue/osu-collector-dl/src/core/OsdbGenerator.ts and
+# Piotrekol/CollectionManager OsdbCollectionHandler.cs.
+#
+# We write "o!dm6" (uncompressed) — this is the format osu-collector-dl
+# itself emits, and it loads in Collection Manager and osu!lazer.
+#
+# Layout (.NET BinaryWriter conventions, little-endian):
+#     string  "o!dm6"
+#     double  save date in OADate format
+#     string  editor (collection uploader name)
+#     int32   number of collections (always 1 — one .osdb per collection)
+#     string  collection name
+#     int32   beatmap count
+#     for each beatmap:
+#         int32   beatmap id
+#         int32   beatmap set id
+#         string  artist
+#         string  title
+#         string  difficulty version
+#         string  md5 hash
+#         string  user comment ("")
+#         byte    mode (0..3)
+#         double  star rating
+#     int32   number of "hash-only" beatmaps (always 0 here)
+#     string  footer "By Piotrekol"
+#
+# Strings use the .NET BinaryWriter format: a 7-bit-encoded length prefix
+# followed by UTF-8 bytes.
+
+class OsdbWriter:
+    @staticmethod
+    def _write_7bit_int(buf: io.BytesIO, value: int) -> None:
+        while value >= 0x80:
+            buf.write(bytes([(value & 0x7F) | 0x80]))
+            value >>= 7
+        buf.write(bytes([value & 0x7F]))
+
+    @classmethod
+    def _write_string(cls, buf: io.BytesIO, s: str) -> None:
+        data = s.encode("utf-8")
+        cls._write_7bit_int(buf, len(data))
+        buf.write(data)
+
+    @staticmethod
+    def _to_oadate(dt: datetime) -> float:
+        # OADate epoch is 1899-12-30. Days since that point as a double.
+        epoch = datetime(1899, 12, 30, tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = dt - epoch
+        return delta.total_seconds() / 86400.0
+
+    @classmethod
+    def write(cls, dest_path: Path, info: CollectionInfo) -> None:
+        if not info.beatmaps:
+            raise ValueError(
+                "OsdbWriter requires per-beatmap details — call "
+                "fetch_collection(..., with_beatmap_details=True) first."
+            )
+
+        buf = io.BytesIO()
+        cls._write_string(buf, "o!dm6")
+        buf.write(struct.pack("<d", cls._to_oadate(datetime.now(timezone.utc))))
+        cls._write_string(buf, info.uploader or "Unknown")
+        buf.write(struct.pack("<i", 1))   # always 1 collection per .osdb
+
+        cls._write_string(buf, info.name or "Unknown")
+        buf.write(struct.pack("<i", len(info.beatmaps)))
+
+        for bm in info.beatmaps:
+            buf.write(struct.pack("<i", bm.beatmap_id))
+            buf.write(struct.pack("<i", bm.set_id))
+            cls._write_string(buf, bm.artist or "Unknown")
+            cls._write_string(buf, bm.title or "Unknown")
+            cls._write_string(buf, bm.diff_name or "Unknown")
+            cls._write_string(buf, bm.md5 or "")
+            cls._write_string(buf, "")  # user comment
+            buf.write(bytes([max(0, min(3, bm.mode))]))
+            buf.write(struct.pack("<d", float(bm.star_rating)))
+
+        buf.write(struct.pack("<i", 0))   # no hash-only beatmaps
+        cls._write_string(buf, "By Piotrekol")
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(buf.getvalue())
+
+
+# ---------------------------------------------------------------------------
 # osu!lazer auto-importer (cross-platform)
 # ---------------------------------------------------------------------------
 
 class OsuLazerImporter:
     """Detect and feed files to a running osu!lazer instance."""
 
-    def __init__(self) -> None:
-        self.binary: Path | None = self._locate_binary()
+    def __init__(self, binary_override: str | Path | None = None) -> None:
+        if binary_override:
+            p = Path(binary_override).expanduser()
+            self.binary: Path | None = p if p.exists() else None
+        else:
+            self.binary = self._locate_binary()
 
     @staticmethod
     def _locate_binary() -> Path | None:
@@ -211,20 +366,30 @@ class OsuLazerImporter:
 
         if sys.platform.startswith("linux"):
             # AppImage in common locations
-            for p in (home / "Applications").glob("osu*.AppImage"):
-                candidates.append(p)
-            # Flatpak shim
+            for d in [home / "Applications", home / "Downloads", home / "bin"]:
+                candidates.extend(d.glob("osu*.AppImage"))
             for p in [
                 Path("/var/lib/flatpak/exports/bin/sh.ppy.osu"),
                 home / ".local/share/flatpak/exports/bin/sh.ppy.osu",
+                Path("/usr/bin/osu-lazer"),
+                Path("/usr/local/bin/osu-lazer"),
             ]:
                 if p.exists():
                     candidates.append(p)
         elif sys.platform == "win32":
+            # Squirrel.Windows installer drops it under Local/osulazer
+            # with the actual exe inside an "app-X.Y.Z" subfolder.
+            base = home / "AppData/Local/osulazer"
+            for ver in sorted(base.glob("app-*"), reverse=True):
+                p = ver / "osu!.exe"
+                if p.exists():
+                    candidates.append(p)
+            # Direct top-level fallback (rare).
             for p in [
-                home / "AppData/Local/osulazer/osu!.exe",
+                base / "osu!.exe",
                 home / "AppData/Local/Programs/osulazer/osu!.exe",
                 Path("C:/Program Files/osulazer/osu!.exe"),
+                Path("C:/Program Files (x86)/osulazer/osu!.exe"),
             ]:
                 if p.exists():
                     candidates.append(p)
@@ -253,16 +418,21 @@ class OsuLazerImporter:
         return False
 
     def import_file(self, osz_path: Path) -> bool:
-        """Send a file to the running osu!lazer instance via its IPC."""
+        """Hand a file to the osu!lazer binary; lazer's IPC will pick it up."""
         if not self.binary or not self.binary.exists():
             return False
         try:
-            subprocess.Popen(
-                [str(self.binary), str(osz_path)],
+            kwargs: dict = dict(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
             )
+            if sys.platform == "win32":
+                # DETACHED_PROCESS so the import call doesn't block on the
+                # parent and doesn't pop a console window.
+                kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen([str(self.binary), str(osz_path)], **kwargs)
             return True
         except OSError:
             return False
@@ -276,7 +446,12 @@ class OsuLazerImporter:
 class DownloadJob:
     collection_ids: list[int]
     output_dir: Path
-    auto_import: bool
+    download_beatmaps: bool = True
+    generate_osdb: bool = False
+    auto_import: bool = True
+    osu_binary: str | None = None       # manual override; "" / None = auto
+    import_parallel: int = 1            # 1..8 — concurrent import calls
+    import_delay_ms: int = 0            # min delay between import calls
     mirror_url: str = DEFAULT_MIRROR
 
 
@@ -296,10 +471,62 @@ class DownloadWorker(QObject):
         self._cancelled = False
         self.api = OsuCollectorClient()
         self.mirror = BeatmapMirror(primary=job.mirror_url)
-        self.importer = OsuLazerImporter() if job.auto_import else None
+        self.importer = (
+            OsuLazerImporter(binary_override=job.osu_binary)
+            if job.auto_import else None
+        )
+        # Import throttling state, guarded by a lock so multiple worker
+        # threads can share it cleanly.
+        import threading as _t
+        self._import_lock = _t.Lock()
+        self._last_import_ts = 0.0
+        self._import_executor: ThreadPoolExecutor | None = None
+        if self.importer and self.importer.binary:
+            workers = max(1, min(8, job.import_parallel))
+            self._import_executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="osu-import",
+            )
 
     def cancel(self) -> None:
         self._cancelled = True
+        if self._import_executor:
+            self._import_executor.shutdown(wait=False, cancel_futures=True)
+
+    # ---- helpers ----------------------------------------------------------
+
+    def _do_import(self, path: Path) -> None:
+        """Run on an import-pool worker; handles delay throttling."""
+        if not self.importer or not self.importer.binary:
+            return
+        if self.job.import_delay_ms > 0:
+            with self._import_lock:
+                wait = (self._last_import_ts
+                        + self.job.import_delay_ms / 1000.0
+                        - time.monotonic())
+                if wait > 0:
+                    time.sleep(wait)
+                self._last_import_ts = time.monotonic()
+        self.importer.import_file(path)
+
+    def _maybe_import(self, path: Path) -> None:
+        """Submit an import job to the pool (non-blocking)."""
+        if not self._import_executor:
+            return
+        try:
+            self._import_executor.submit(self._do_import, path)
+        except RuntimeError:
+            # Pool may have been shut down on cancel.
+            pass
+
+    def _download_one(self, set_id: int, col_dir: Path) -> tuple[int, Path | None, str | None]:
+        try:
+            path = self.mirror.download(set_id, col_dir)
+            return set_id, path, None
+        except Exception as e:
+            return set_id, None, str(e)
+
+    # ---- main loop --------------------------------------------------------
 
     def run(self) -> None:
         ok_collections = 0
@@ -309,8 +536,10 @@ class DownloadWorker(QObject):
             if self._cancelled:
                 self.log.emit("[cancelled]")
                 break
+
+            need_details = self.job.generate_osdb
             try:
-                info = self.api.fetch_collection(cid)
+                info = self.api.fetch_collection(cid, with_beatmap_details=need_details)
             except Exception as e:
                 self.error.emit(f"Collection {cid}: {e}")
                 continue
@@ -321,35 +550,65 @@ class DownloadWorker(QObject):
             )
             self.collection_started.emit(idx, total, info.name, len(info.beatmapset_ids))
 
-            # Per-collection output folder, mirroring osu-collector-dl.
             safe_name = _safe_filename(info.name)
             col_dir = self.job.output_dir / f"{info.id} - {safe_name}"
             col_dir.mkdir(parents=True, exist_ok=True)
 
             ok = 0
             failed = 0
-            for i, set_id in enumerate(info.beatmapset_ids, 1):
-                if self._cancelled:
-                    break
-                self.beatmap_progress.emit(i, len(info.beatmapset_ids))
+
+            # --- generate .osdb (independent of beatmap downloads) ---
+            if self.job.generate_osdb:
                 try:
-                    path = self.mirror.download(set_id, col_dir)
-                    if path is None:
-                        self.log.emit(f"  [skip {set_id}: not on mirror]")
-                        failed += 1
-                        continue
-                    ok += 1
-                    self.log.emit(f"  [{i}/{len(info.beatmapset_ids)}] {path.name}")
-                    if self.importer and self.importer.is_running():
-                        self.importer.import_file(path)
+                    osdb_path = col_dir / f"{safe_name}.osdb"
+                    OsdbWriter.write(osdb_path, info)
+                    self.log.emit(f"  [.osdb] {osdb_path.name}")
                 except Exception as e:
-                    failed += 1
-                    self.log.emit(f"  [error {set_id}: {e}]")
+                    self.log.emit(f"  [.osdb error] {e}")
+
+            # --- download beatmaps in parallel ---
+            if self.job.download_beatmaps and info.beatmapset_ids:
+                set_ids = info.beatmapset_ids
+                done = 0
+                with ThreadPoolExecutor(max_workers=DOWNLOAD_PARALLEL) as ex:
+                    futures = {
+                        ex.submit(self._download_one, sid, col_dir): sid
+                        for sid in set_ids
+                    }
+                    for fut in as_completed(futures):
+                        if self._cancelled:
+                            for f in futures:
+                                f.cancel()
+                            break
+                        done += 1
+                        self.beatmap_progress.emit(done, len(set_ids))
+                        sid, path, err = fut.result()
+                        if err:
+                            failed += 1
+                            self.log.emit(f"  [error {sid}: {err}]")
+                            continue
+                        if path is None:
+                            failed += 1
+                            self.log.emit(f"  [skip {sid}: not on mirror]")
+                            continue
+                        ok += 1
+                        self.log.emit(f"  [{done}/{len(set_ids)}] {path.name}")
+                        self._maybe_import(path)
+            else:
+                # No beatmap download requested. Still emit progress so the
+                # bar finishes.
+                self.beatmap_progress.emit(len(info.beatmapset_ids),
+                                           max(len(info.beatmapset_ids), 1))
 
             self.collection_finished.emit(idx, ok, len(info.beatmapset_ids))
             self.log.emit(f"=== {info.name}: {ok} ok, {failed} failed ===")
-            if ok > 0:
+            if ok > 0 or self.job.generate_osdb:
                 ok_collections += 1
+
+        # Wait for any in-flight imports to drain so the GUI's "done"
+        # message reflects reality.
+        if self._import_executor:
+            self._import_executor.shutdown(wait=True)
 
         self.batch_finished.emit(ok_collections, total)
 
@@ -403,21 +662,77 @@ class MainWindow(QMainWindow):
         dir_layout.addWidget(browse)
         layout.addWidget(dir_group)
 
-        # --- options ---
-        opts_group = QGroupBox("Options")
-        opts_layout = QVBoxLayout(opts_group)
+        # --- what to do ---
+        what_group = QGroupBox("What to download")
+        what_layout = QVBoxLayout(what_group)
+
+        self.download_beatmaps_cb = QCheckBox("Download beatmap sets (.osz)")
+        self.download_beatmaps_cb.setChecked(
+            self.settings.get("download_beatmaps", True)
+        )
+        what_layout.addWidget(self.download_beatmaps_cb)
+
+        self.generate_osdb_cb = QCheckBox(
+            "Generate .osdb files (Collection Manager / osu!lazer compatible)"
+        )
+        self.generate_osdb_cb.setChecked(
+            self.settings.get("generate_osdb", True)
+        )
+        what_layout.addWidget(self.generate_osdb_cb)
+
         self.auto_import_cb = QCheckBox(
-            "Auto-import to osu!lazer as files arrive (if osu!lazer is running)"
+            "Auto-import each beatmap into osu!lazer as it finishes downloading"
         )
         self.auto_import_cb.setChecked(self.settings.get("auto_import", True))
-        opts_layout.addWidget(self.auto_import_cb)
+        what_layout.addWidget(self.auto_import_cb)
 
         self.consolidate_cb = QCheckBox(
-            "Consolidate any generated .osdb files into <output>/db (post-download)"
+            "After downloads finish, move all .osdb files into <output>/db/"
         )
         self.consolidate_cb.setChecked(self.settings.get("consolidate_osdb", True))
-        opts_layout.addWidget(self.consolidate_cb)
-        layout.addWidget(opts_group)
+        what_layout.addWidget(self.consolidate_cb)
+        layout.addWidget(what_group)
+
+        # --- tuning ---
+        tune_group = QGroupBox("Tuning")
+        tune_form = QFormLayout(tune_group)
+
+        self.import_parallel_spin = QSpinBox()
+        self.import_parallel_spin.setRange(1, 8)
+        self.import_parallel_spin.setValue(int(self.settings.get("import_parallel", 1)))
+        self.import_parallel_spin.setToolTip(
+            "How many beatmaps to import into osu!lazer in parallel.\n"
+            "1 = strictly one-at-a-time (safest, slowest).\n"
+            "Higher = faster but more risk of choking osu!lazer.\n"
+            "Beatmap downloads are always 4-parallel — this only affects imports."
+        )
+        tune_form.addRow("Import parallelism:", self.import_parallel_spin)
+
+        self.import_delay_spin = QSpinBox()
+        self.import_delay_spin.setRange(0, 5000)
+        self.import_delay_spin.setSuffix(" ms")
+        self.import_delay_spin.setSingleStep(50)
+        self.import_delay_spin.setValue(int(self.settings.get("import_delay_ms", 200)))
+        self.import_delay_spin.setToolTip(
+            "Minimum delay between auto-import calls to osu!lazer.\n"
+            "Composes with 'Import parallelism' above — parallelism caps\n"
+            "burst size, delay caps steady-state rate.\n"
+            "Increase this if osu!lazer crashes or chokes during a big batch."
+        )
+        tune_form.addRow("Import delay:", self.import_delay_spin)
+
+        osu_path_row = QHBoxLayout()
+        self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
+        self.osu_path_edit.setPlaceholderText("(auto-detect)")
+        osu_browse = QPushButton("Browse…")
+        osu_browse.clicked.connect(self._on_browse_osu)
+        osu_path_row.addWidget(self.osu_path_edit)
+        osu_path_row.addWidget(osu_browse)
+        osu_row_w = QWidget()
+        osu_row_w.setLayout(osu_path_row)
+        tune_form.addRow("osu!lazer binary:", osu_row_w)
+
+        layout.addWidget(tune_group)
 
         # --- progress ---
         prog_group = QGroupBox("Progress")
@@ -466,11 +781,25 @@ class MainWindow(QMainWindow):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps({
             "last_output_dir": self.dir_edit.text(),
+            "download_beatmaps": self.download_beatmaps_cb.isChecked(),
+            "generate_osdb": self.generate_osdb_cb.isChecked(),
             "auto_import": self.auto_import_cb.isChecked(),
             "consolidate_osdb": self.consolidate_cb.isChecked(),
+            "import_parallel": self.import_parallel_spin.value(),
+            "import_delay_ms": self.import_delay_spin.value(),
+            "osu_binary": self.osu_path_edit.text(),
         }, indent=2))
 
     # ----- event handlers --------------------------------------------------
+
+    def closeEvent(self, event) -> None:    # noqa: N802 (Qt override)
+        # Persist settings on window close so adjustments aren't lost
+        # if the user closes without clicking Start.
+        try:
+            self._save_settings()
+        except OSError:
+            pass
+        super().closeEvent(event)
 
     def _on_browse(self) -> None:
         d = QFileDialog.getExistingDirectory(
@@ -478,6 +807,18 @@ class MainWindow(QMainWindow):
         )
         if d:
             self.dir_edit.setText(d)
+
+    def _on_browse_osu(self) -> None:
+        start = self.osu_path_edit.text() or str(Path.home())
+        if sys.platform == "win32":
+            filt = "osu! executable (osu!.exe);;All files (*)"
+        else:
+            filt = "osu! executable (osu*);;All files (*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate osu!lazer binary", start, filt
+        )
+        if path:
+            self.osu_path_edit.setText(path)
 
     def _on_start(self) -> None:
         ids = self._parse_ids(self.ids_edit.toPlainText())
@@ -494,10 +835,24 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
 
+        if (not self.download_beatmaps_cb.isChecked()
+                and not self.generate_osdb_cb.isChecked()):
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Nothing to do — tick at least one of "
+                "'Download beatmap sets' or 'Generate .osdb files'."
+            )
+            return
+
         job = DownloadJob(
             collection_ids=ids,
             output_dir=out_dir,
+            download_beatmaps=self.download_beatmaps_cb.isChecked(),
+            generate_osdb=self.generate_osdb_cb.isChecked(),
             auto_import=self.auto_import_cb.isChecked(),
+            osu_binary=self.osu_path_edit.text().strip() or None,
+            import_parallel=self.import_parallel_spin.value(),
+            import_delay_ms=self.import_delay_spin.value(),
         )
 
         self.thread = QThread()
