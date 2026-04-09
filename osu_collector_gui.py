@@ -17,6 +17,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -1456,7 +1457,7 @@ class MainWindow(QMainWindow):
     def _on_detect_cm(self) -> None:
         cfg = CmCliRunner.autodetect()
         if cfg is not None:
-            self.cm_cli_edit.setText(" ".join(cfg.command))
+            self.cm_cli_edit.setText(shlex.join(cfg.command))
             return
 
         # Nothing found locally — offer to download from GitHub releases.
@@ -1494,7 +1495,7 @@ class MainWindow(QMainWindow):
                 "message."
             )
             return
-        self.cm_cli_edit.setText(" ".join(cfg.command))
+        self.cm_cli_edit.setText(shlex.join(cfg.command))
         QMessageBox.information(
             self, APP_NAME,
             f"Installed Collection Manager CLI to {CM_CLI_CACHE_DIR}."
@@ -1539,10 +1540,14 @@ class MainWindow(QMainWindow):
     def _resolve_cm_cli(self) -> list[str] | None:
         raw = self.cm_cli_edit.text().strip()
         if raw:
-            return raw.split()
+            try:
+                return shlex.split(raw)
+            except ValueError:
+                # Mismatched quotes etc. — fall back to plain split.
+                return raw.split()
         cfg = CmCliRunner.autodetect()
         if cfg is not None:
-            self.cm_cli_edit.setText(" ".join(cfg.command))
+            self.cm_cli_edit.setText(shlex.join(cfg.command))
             return cfg.command
         return None
 
@@ -1820,9 +1825,12 @@ class MainWindow(QMainWindow):
                     )
                     return
                 cm_cli_cmd = cfg.command
-                self.cm_cli_edit.setText(" ".join(cfg.command))
+                self.cm_cli_edit.setText(shlex.join(cfg.command))
             else:
-                cm_cli_cmd = raw.split()
+                try:
+                    cm_cli_cmd = shlex.split(raw)
+                except ValueError:
+                    cm_cli_cmd = raw.split()
 
         # Resolve the target collection choice into a single name override
         # (or None if the user wants the default per-collection naming).
