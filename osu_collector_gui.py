@@ -57,8 +57,20 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 APP_AUTHOR = "Red"
+
+
+def _default_lazer_realm_path() -> Path:
+    """Best-effort default for the user's client.realm location."""
+    home = Path.home()
+    if sys.platform == "win32":
+        # osu!lazer on Windows stores data in %APPDATA%\osu
+        return home / "AppData/Roaming/osu/client.realm"
+    if sys.platform == "darwin":
+        return home / "Library/Application Support/osu/client.realm"
+    # Linux + everything else
+    return home / ".local/share/osu/client.realm"
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+https://github.com/R3dWolfie/Osu-Collector-GUI)"
 
 OSU_COLLECTOR_API = "https://osucollector.com/api"
@@ -1693,7 +1705,7 @@ class MainWindow(QMainWindow):
         realm_row = QHBoxLayout()
         self.realm_edit = QLineEdit(self.settings.get(
             "lazer_realm_path",
-            str(Path.home() / ".local/share/osu/client.realm"),
+            str(_default_lazer_realm_path()),
         ))
         realm_browse = QPushButton("Browse…")
         realm_browse.clicked.connect(self._on_browse_realm)
