@@ -1217,7 +1217,8 @@ class DownloadWorker(QObject):
             import psutil
         except ImportError:
             return False
-        killed = False
+
+        targets: list = []
         for p in psutil.process_iter(attrs=["name", "exe"]):
             try:
                 name = (p.info.get("name") or "").lower()
@@ -1227,15 +1228,64 @@ class DownloadWorker(QObject):
             if ("osu!" in name or "osu.exe" in name
                     or name.startswith("osu_")
                     or "osu!.exe" in exe):
-                try:
-                    p.terminate()
-                    killed = True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        if killed:
-            self.log.emit("[lazer] terminated running osu!lazer instance")
-            time.sleep(2)
-        return killed
+                targets.append(p)
+
+        if not targets:
+            return False
+
+        self.log.emit(
+            f"[lazer] terminating {len(targets)} osu!lazer process(es) "
+            "and waiting for them to exit cleanly..."
+        )
+        # SIGTERM first — lazer's signal handler flushes the Realm and
+        # closes its file handles. Skipping the wait or going straight
+        # to SIGKILL leaves the realm in a half-flushed state that
+        # Realm.NET refuses to re-open under wine, crashing CM CLI with
+        # 0xe0434352.
+        for p in targets:
+            try:
+                p.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Wait up to 15 s for graceful shutdown.
+        gone, alive = psutil.wait_procs(targets, timeout=15)
+        for p in alive:
+            self.log.emit(f"[lazer] PID {p.pid} ignored SIGTERM, sending SIGKILL")
+            try:
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if alive:
+            psutil.wait_procs(alive, timeout=5)
+
+        # Extra grace period so the kernel releases the file handles
+        # and any Realm .lock entries are visible-as-stale to the next
+        # opener.
+        time.sleep(2)
+
+        # Clean up obviously-stale Realm lock + management files. Lazer
+        # leaves these behind when it exits cleanly too, but a hard
+        # SIGKILL after a hung shutdown can produce a corrupt .lock that
+        # Realm.NET refuses. Removing them is safe — Realm will recreate
+        # on next open.
+        try:
+            realm_path = Path(self.job.lazer_realm_path).expanduser()
+            for stale in [
+                realm_path.parent / "client.realm.lock",
+                realm_path.parent / "client.realm.note",
+            ]:
+                if stale.exists():
+                    try:
+                        stale.unlink()
+                        self.log.emit(f"[lazer] removed stale {stale.name}")
+                    except OSError:
+                        pass
+        except (TypeError, OSError):
+            pass
+
+        self.log.emit("[lazer] all instances stopped")
+        return True
 
     def _lazer_relaunch(self) -> None:
         if not self.importer or not self.importer.binary:
