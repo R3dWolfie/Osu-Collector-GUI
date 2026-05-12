@@ -1031,7 +1031,7 @@ class DownloadJob:
     # Dedup
     skip_already_imported: bool = True        # probe lazer + skip its sets
     # Tuning
-    download_parallel: int = 4                # 1..32 — concurrent .osz fetches
+    download_parallel: int = 10               # 1..32 — concurrent .osz fetches
 
 
 class DownloadWorker(QObject):
@@ -1832,7 +1832,7 @@ class MainWindow(QMainWindow):
 
         self.download_parallel_spin = QSpinBox()
         self.download_parallel_spin.setRange(1, 32)
-        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 4)))
+        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 10)))
         self.download_parallel_spin.setToolTip(
             "How many .osz downloads to run in parallel per collection.\n"
             "Higher = faster on fast connections, but be polite to mirrors —\n"
