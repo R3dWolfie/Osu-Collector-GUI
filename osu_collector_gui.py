@@ -2059,6 +2059,25 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
+    def showEvent(self, event) -> None:    # noqa: N802 (Qt override)
+        super().showEvent(event)
+        # Qt's initial layout pass can underestimate the scroll area's
+        # content height when there are many nested QFormLayouts. Defer
+        # a recomputation to the next event-loop tick so it runs AFTER
+        # the layout has settled. Especially load-bearing on Windows
+        # where the initial configure-notify timing differs from Linux,
+        # producing the "have to resize the window to see everything"
+        # symptom users hit on first open.
+        if not getattr(self, "_initial_layout_done", False):
+            self._initial_layout_done = True
+            QTimer.singleShot(0, self._recompute_scroll_layout)
+
+    def _recompute_scroll_layout(self) -> None:
+        central = self.centralWidget()
+        if isinstance(central, QScrollArea) and central.widget() is not None:
+            central.widget().updateGeometry()
+            central.widget().adjustSize()
+
     def _on_browse(self) -> None:
         d = QFileDialog.getExistingDirectory(
             self, "Output folder", self.dir_edit.text()
