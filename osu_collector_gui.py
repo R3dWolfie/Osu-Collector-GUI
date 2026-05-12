@@ -214,7 +214,7 @@ class BeatmapMirror:
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
-                 round_robin: bool = True) -> None:
+                 round_robin: bool = False) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.urls = [primary, *fallbacks]
