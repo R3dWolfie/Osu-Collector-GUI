@@ -28,3 +28,6 @@ Thumbs.db
 # App-local
 settings.json
 *.log
+
+# Brainstorming companion artifacts
+.superpowers/
