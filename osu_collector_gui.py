@@ -690,13 +690,29 @@ class CmCliRunner:
         bids_file = tmp_dir / "probe-bids.txt"
         probe_osdb = tmp_dir / "probe.osdb"
 
+        # Snapshot the realm into a probe-only subdir so CM CLI doesn't
+        # contend with a running osu!lazer for client.realm's lock. CM
+        # CLI -l expects a directory containing a file literally named
+        # "client.realm", so the snapshot must keep that filename. Realm
+        # is MVCC — a file-level copy is a consistent point-in-time view.
+        probe_realm_dir = tmp_dir / "probe-realm"
+        probe_realm_dir.mkdir(exist_ok=True)
+        probe_realm = probe_realm_dir / "client.realm"
+
         try:
+            try:
+                shutil.copy2(realm_path, probe_realm)
+            except OSError:
+                # Snapshot failed (disk full, perms, etc.) — fail open
+                # so the caller proceeds to a full download.
+                return ProbeResult()
+
             bids_file.write_text("\n".join(str(b) for b in beatmap_ids))
 
             argv = [*self.cfg.command, "create",
                     "-b", str(bids_file),
                     "-o", str(probe_osdb),
-                    "-l", str(realm_path.parent)]
+                    "-l", str(probe_realm_dir)]
             self._run(argv)
 
             if not probe_osdb.exists() or probe_osdb.stat().st_size == 0:
@@ -717,8 +733,13 @@ class CmCliRunner:
         except Exception:
             return ProbeResult()
         finally:
+            for p in (probe_osdb, probe_realm):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
-                probe_osdb.unlink(missing_ok=True)
+                probe_realm_dir.rmdir()
             except OSError:
                 pass
 

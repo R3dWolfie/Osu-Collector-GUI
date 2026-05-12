@@ -60,9 +60,19 @@ def test_probe_writes_bids_to_realm_parent_and_returns_resolved(tmp_path):
     assert "42" in bids_path.read_text()
     assert "99" in bids_path.read_text()
 
-    # -l points at the realm parent (NOT the realm file itself).
+    # -l points at the snapshot subdir under .oc-gui-tmp/, NOT the live
+    # realm's parent — the probe takes a file-level copy of client.realm
+    # so CM CLI doesn't contend with a running osu!lazer for the lock.
     l_idx = argv.index("-l") + 1
-    assert Path(argv[l_idx]) == realm.parent
+    l_path = Path(argv[l_idx])
+    assert l_path == tmp_dir / "probe-realm"
+    # CM CLI looks for a file literally named "client.realm" in the -l dir.
+    # The snapshot was created with that filename (we can verify by checking
+    # that fake_run saw the snapshot during the call — at that moment the
+    # file existed; the finally block unlinks it after probe_imported_beatmaps
+    # returns).
+    # Note: we don't assert the snapshot still exists post-return because
+    # the finally block deliberately cleans it up.
 
 
 def test_probe_returns_empty_result_when_cm_cli_fails(tmp_path):
