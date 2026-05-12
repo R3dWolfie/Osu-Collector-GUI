@@ -1072,6 +1072,16 @@ class DownloadWorker(QObject):
         if self._import_executor:
             self._import_executor.shutdown(wait=False, cancel_futures=True)
 
+    def _probe_enabled_for_job(self) -> bool:
+        """All gates that must be true for the probe step to run."""
+        return bool(
+            self.job.skip_already_imported
+            and self.job.add_to_lazer_collections
+            and self.job.cm_cli_command
+            and self.job.lazer_realm_path
+            and Path(self.job.lazer_realm_path).expanduser().exists()
+        )
+
     def confirm_merge_continue(self) -> None:
         """Called from the GUI thread when the user clicks OK on the
         'did osu!lazer finish importing?' dialog. Releases the worker
@@ -1123,7 +1133,13 @@ class DownloadWorker(QObject):
                 self.log.emit("[cancelled]")
                 break
 
-            need_details = self.job.generate_osdb
+            # The probe and .osdb generation both need per-beatmap details
+            # (beatmap_id + md5). Force the detail fetch when EITHER feature
+            # is on, even if the user didn't tick "generate .osdb".
+            need_details = (
+                self.job.generate_osdb
+                or self._probe_enabled_for_job()
+            )
             try:
                 info = self.api.fetch_collection(cid, with_beatmap_details=need_details)
             except Exception as e:
@@ -1140,14 +1156,45 @@ class DownloadWorker(QObject):
             col_dir = self.job.output_dir / f"{info.id} - {safe_name}"
             col_dir.mkdir(parents=True, exist_ok=True)
 
+            # --- probe lazer for which sets it already has ---
+            skipped_set_ids: set[int] = set()
+            probe_md5_map: dict[int, str] = {}
+            if self._probe_enabled_for_job() and info.beatmaps and not self._cancelled:
+                try:
+                    self.log.emit(
+                        f"  [probe] querying lazer for {len(info.beatmaps)} beatmap IDs..."
+                    )
+                    cm = CmCliRunner(CmCliConfig(
+                        command=list(self.job.cm_cli_command),
+                        osu_location=None,
+                    ))
+                    realm = Path(self.job.lazer_realm_path).expanduser()
+                    probe = cm.probe_imported_beatmaps(
+                        realm, [b.beatmap_id for b in info.beatmaps if b.beatmap_id]
+                    )
+                    probe_md5_map = {bid: bm.md5 for bid, bm in probe.resolved.items() if bm.md5}
+                    skipped_set_ids = {
+                        b.set_id for b in info.beatmaps
+                        if b.beatmap_id in probe.resolved and b.set_id
+                    }
+                    self.log.emit(
+                        f"  [probe] lazer has {len(probe.resolved)}/{len(info.beatmaps)} maps; "
+                        f"skipping {len(skipped_set_ids)}/{len(info.beatmapset_ids)} sets"
+                    )
+                except Exception as e:
+                    # Fail-open: probe failures cost bandwidth, not data.
+                    self.log.emit(f"  [probe] failed: {e} — proceeding without dedup")
+
             ok = 0
             failed = 0
+            skipped = 0
 
             # --- generate .osdb (independent of beatmap downloads) ---
             if self.job.generate_osdb:
                 try:
                     osdb_path = col_dir / f"{safe_name}.osdb"
-                    OsdbWriter.write(osdb_path, info)
+                    OsdbWriter.write(osdb_path, info,
+                                     prefer_md5_map=probe_md5_map or None)
                     self._generated_osdb_files.append(osdb_path)
                     self.log.emit(f"  [.osdb] {osdb_path.name}")
                 except Exception as e:
@@ -1156,12 +1203,23 @@ class DownloadWorker(QObject):
             # --- download beatmaps in parallel ---
             if self.job.download_beatmaps and info.beatmapset_ids:
                 set_ids = info.beatmapset_ids
+                workers = max(1, min(32, self.job.download_parallel))
                 done = 0
-                with ThreadPoolExecutor(max_workers=DOWNLOAD_PARALLEL) as ex:
-                    futures = {
-                        ex.submit(self._download_one, sid, col_dir): sid
-                        for sid in set_ids
-                    }
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = {}
+                    for sid in set_ids:
+                        if sid in skipped_set_ids:
+                            continue
+                        futures[ex.submit(self._download_one, sid, col_dir)] = sid
+                    # Tick the bar for every set already skipped so progress
+                    # accurately reflects total work.
+                    if skipped_set_ids:
+                        done = len(skipped_set_ids & set(set_ids))
+                        skipped = done
+                        self.beatmap_progress.emit(done, len(set_ids))
+                        self.log.emit(
+                            f"  [skip] {skipped} set(s) already imported in lazer"
+                        )
                     for fut in as_completed(futures):
                         if self._cancelled:
                             for f in futures:
@@ -1188,8 +1246,11 @@ class DownloadWorker(QObject):
                                            max(len(info.beatmapset_ids), 1))
 
             self.collection_finished.emit(idx, ok, len(info.beatmapset_ids))
-            self.log.emit(f"=== {info.name}: {ok} ok, {failed} failed ===")
-            if ok > 0 or self.job.generate_osdb:
+            self.log.emit(
+                f"=== {info.name}: {ok} ok, {failed} failed, "
+                f"{skipped} skipped (already imported) ==="
+            )
+            if ok > 0 or skipped > 0 or self.job.generate_osdb:
                 ok_collections += 1
 
         # Wait for any in-flight imports to drain so the GUI's "done"
