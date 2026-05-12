@@ -1801,6 +1801,17 @@ class MainWindow(QMainWindow):
         )
         tune_form.addRow("Import parallelism:", self.import_parallel_spin)
 
+        self.download_parallel_spin = QSpinBox()
+        self.download_parallel_spin.setRange(1, 32)
+        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 4)))
+        self.download_parallel_spin.setToolTip(
+            "How many .osz downloads to run in parallel per collection.\n"
+            "Higher = faster on fast connections, but be polite to mirrors —\n"
+            "above ~16 some mirrors may throttle. Round-robins across\n"
+            "catboy.best, nerinyan.moe, and osu.direct to spread the load."
+        )
+        tune_form.addRow("Parallel downloads:", self.download_parallel_spin)
+
         self.import_delay_spin = QSpinBox()
         self.import_delay_spin.setRange(0, 5000)
         self.import_delay_spin.setSuffix(" ms")
@@ -2001,6 +2012,7 @@ class MainWindow(QMainWindow):
             "consolidate_osdb": self.consolidate_cb.isChecked(),
             "cleanup_after_import": self.cleanup_cb.isChecked(),
             "import_parallel": self.import_parallel_spin.value(),
+            "download_parallel": self.download_parallel_spin.value(),
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
             "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
