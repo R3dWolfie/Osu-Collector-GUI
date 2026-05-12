@@ -1859,6 +1859,24 @@ class MainWindow(QMainWindow):
         )
         lazer_form.addRow(self.add_to_lazer_cb)
 
+        self.skip_imported_cb = QCheckBox(
+            "Skip beatmapsets already imported in osu!lazer"
+        )
+        self.skip_imported_cb.setChecked(
+            bool(self.settings.get("skip_already_imported", False))
+        )
+        self.skip_imported_cb.setToolTip(
+            "Before downloading, ask Collection Manager CLI which beatmaps\n"
+            "your osu!lazer install already has. Skip the .osz download for\n"
+            "those sets — but still add them to the lazer collection so\n"
+            "huge collections (e.g. 17391) compose without redownloading\n"
+            "thousands of maps you already have.\n"
+            "\n"
+            "Requires Collection Manager CLI (configured below) and the\n"
+            "merge feature above to be ON."
+        )
+        lazer_form.addRow(self.skip_imported_cb)
+
         cm_row = QHBoxLayout()
         # cm_cli_command is stored as a list in settings (canonical), but
         # the QLineEdit shows a shell-quoted string for editing convenience.
@@ -1984,6 +2002,12 @@ class MainWindow(QMainWindow):
         scroll.setWidget(root)
         self.setCentralWidget(scroll)
 
+        # Keep the skip-imported checkbox grey when CM CLI or merge are unset.
+        self.add_to_lazer_cb.toggled.connect(self._update_skip_imported_enabled)
+        self.cm_cli_edit.textChanged.connect(self._update_skip_imported_enabled)
+        # Apply the initial enable state for the skip-imported checkbox.
+        self._update_skip_imported_enabled()
+
     # ----- settings persistence -------------------------------------------
 
     def _load_settings(self) -> dict:
@@ -2016,6 +2040,7 @@ class MainWindow(QMainWindow):
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
             "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
+            "skip_already_imported": self.skip_imported_cb.isChecked(),
             "cm_cli_command": cm_list,
             "lazer_realm_path": self.realm_edit.text(),
             "target_collection": self.target_combo.currentText(),
@@ -2193,6 +2218,25 @@ class MainWindow(QMainWindow):
             self.cm_cli_edit.setText(shlex.join(cfg.command))
             return cfg.command
         return None
+
+    def _update_skip_imported_enabled(self) -> None:
+        """Enable the skip-imported checkbox only when CM CLI + add-to-lazer
+        are both configured. Grey out with explanatory tooltip otherwise."""
+        cm_ok = bool(self._resolve_cm_cli())
+        merge_on = self.add_to_lazer_cb.isChecked()
+        self.skip_imported_cb.setEnabled(cm_ok and merge_on)
+        if not cm_ok:
+            self.skip_imported_cb.setToolTip(
+                "Configure Collection Manager CLI below to enable this option."
+            )
+        elif not merge_on:
+            self.skip_imported_cb.setToolTip(
+                "Enable 'Merge generated .osdb files into osu!lazer's "
+                "collection database' above to use this."
+            )
+        # When enabled, keep the original tooltip (Qt remembers the most-
+        # recently-set value, so don't reset it here — the initial setToolTip
+        # in _build_ui covers the enabled case).
 
     def _on_refresh_collections(self) -> None:
         """Run CM CLI export to read existing lazer collection names."""
