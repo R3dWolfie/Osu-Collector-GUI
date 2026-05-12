@@ -80,7 +80,12 @@ DEFAULT_MIRROR = "https://catboy.best/d"   # /<beatmapset_id>
 FALLBACK_MIRRORS = [
     "https://api.nerinyan.moe/d",
     "https://api.osu.direct/d",
+    "https://beatconnect.io/b",
 ]
+
+# After a mirror's connect fails, blacklist it for this many seconds so
+# other parallel download slots don't waste their connect-timeout on it.
+MIRROR_DEAD_TTL_S = 60
 
 # Network limits — be polite to the mirrors
 DOWNLOAD_PARALLEL = 4   # how many .osz fetches in parallel within a collection
@@ -211,7 +216,20 @@ class OsuCollectorClient:
 # ---------------------------------------------------------------------------
 
 class BeatmapMirror:
-    """Downloads a single .osz from a mirror with retries + fallbacks."""
+    """Downloads a single .osz from a mirror with retries + fallbacks.
+
+    Shares a process-wide dead-mirror blacklist across instances so that
+    when one parallel download slot detects a mirror is blocking/timing
+    out at TCP-connect time, the other 9 slots skip that mirror for the
+    next MIRROR_DEAD_TTL_S seconds and go straight to a working one.
+    Without this, every slot independently rediscovers the same dead
+    mirror, wasting ~10s connect-timeout each.
+    """
+
+    # Class-level cache: {url -> monotonic_until}. Each parallel download
+    # slot sees the same blacklist within the lifetime of the process.
+    _dead_until: dict[str, float] = {}
+    _dead_lock = __import__("threading").Lock()
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
@@ -221,12 +239,38 @@ class BeatmapMirror:
         self.urls = [primary, *fallbacks]
         self.round_robin = round_robin
 
+    @classmethod
+    def _is_dead(cls, url: str) -> bool:
+        with cls._dead_lock:
+            until = cls._dead_until.get(url, 0.0)
+            if until > time.monotonic():
+                return True
+            if until:
+                cls._dead_until.pop(url, None)
+            return False
+
+    @classmethod
+    def _mark_dead(cls, url: str) -> None:
+        with cls._dead_lock:
+            cls._dead_until[url] = time.monotonic() + MIRROR_DEAD_TTL_S
+
+    @classmethod
+    def reset_dead_mirrors(cls) -> None:
+        """Used by tests; can also be called between runs to force a retry."""
+        with cls._dead_lock:
+            cls._dead_until.clear()
+
     def _urls_for_set(self, set_id: int) -> list[str]:
-        """Return urls rotated so each set_id picks a different primary."""
-        if not self.round_robin or len(self.urls) <= 1:
-            return list(self.urls)
-        offset = set_id % len(self.urls)
-        return self.urls[offset:] + self.urls[:offset]
+        """Return urls in order, with rotation if round_robin and skipping
+        currently-blacklisted mirrors. If ALL mirrors are blacklisted,
+        fall back to trying everything (the blacklist is just a hint)."""
+        if self.round_robin and len(self.urls) > 1:
+            offset = set_id % len(self.urls)
+            ordered = self.urls[offset:] + self.urls[:offset]
+        else:
+            ordered = list(self.urls)
+        alive = [u for u in ordered if not self._is_dead(u)]
+        return alive if alive else ordered
 
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure."""
@@ -255,6 +299,14 @@ class BeatmapMirror:
                                     f.write(chunk)
                         tmp.rename(dest)
                         return dest
+                except (requests.ConnectionError, requests.Timeout) as e:
+                    # TCP-level failure: mirror is unreachable / rate-limiting
+                    # / blocking our IP. Blacklist it so other parallel slots
+                    # don't waste another connect-timeout on it. Skip remaining
+                    # retries against this mirror.
+                    self._mark_dead(base_url)
+                    last_error = e
+                    break
                 except requests.RequestException as e:
                     last_error = e
                     time.sleep(HTTP_BACKOFF_S * (attempt + 1))
