@@ -2044,8 +2044,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}")
         # Comfortable default that fits all the form rows without scrolling.
-        self.resize(900, 950)
-        self.setMinimumSize(520, 400)
+        self.resize(520, 680)
+        self.setMinimumSize(480, 500)
 
         self.thread: QThread | None = None
         self.worker: DownloadWorker | None = None
