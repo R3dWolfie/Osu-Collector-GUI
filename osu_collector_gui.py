@@ -306,6 +306,17 @@ class BeatmapMirror:
             cls._active[chosen] = cls._active.get(chosen, 0) + 1
             return chosen
 
+    @classmethod
+    def _release(cls, url: str) -> None:
+        """Decrement active count for `url`. Pop the entry if count
+        reaches 0. Must pair with a successful _acquire_least_busy call."""
+        with cls._state_lock:
+            n = cls._active.get(url, 0)
+            if n <= 1:
+                cls._active.pop(url, None)
+            else:
+                cls._active[url] = n - 1
+
     def _urls_for_set(self, set_id: int) -> list[str]:
         """Return urls in order, with rotation if round_robin and skipping
         currently-blacklisted mirrors. If ALL mirrors are blacklisted,
