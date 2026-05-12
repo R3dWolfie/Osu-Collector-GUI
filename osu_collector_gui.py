@@ -336,18 +336,20 @@ class OsdbWriter:
         return delta.total_seconds() / 86400.0
 
     @classmethod
-    def write(cls, dest_path: Path, info: CollectionInfo) -> None:
+    def write(cls, dest_path: Path, info: CollectionInfo,
+              prefer_md5_map: dict[int, str] | None = None) -> None:
         if not info.beatmaps:
             raise ValueError(
                 "OsdbWriter requires per-beatmap details — call "
                 "fetch_collection(..., with_beatmap_details=True) first."
             )
-        cls.write_many(dest_path, [info])
+        cls.write_many(dest_path, [info], prefer_md5_map=prefer_md5_map)
 
     @classmethod
     def write_many(cls, dest_path: Path,
                    collections: list[CollectionInfo],
-                   editor: str | None = None) -> None:
+                   editor: str | None = None,
+                   prefer_md5_map: dict[int, str] | None = None) -> None:
         """Write one .osdb file containing one or more collections.
 
         Writes o!dm8 format: an uncompressed "o!dm8" header followed by
@@ -392,7 +394,10 @@ class OsdbWriter:
                 cls._write_string(body, bm.artist or "Unknown")
                 cls._write_string(body, bm.title or "Unknown")
                 cls._write_string(body, bm.diff_name or "Unknown")
-                cls._write_string(body, bm.md5 or "")
+                md5 = bm.md5 or ""
+                if prefer_md5_map and bm.beatmap_id in prefer_md5_map:
+                    md5 = prefer_md5_map[bm.beatmap_id]
+                cls._write_string(body, md5)
                 cls._write_string(body, "")  # user comment
                 body.write(bytes([max(0, min(3, bm.mode))]))
                 body.write(struct.pack("<d", float(bm.star_rating)))
