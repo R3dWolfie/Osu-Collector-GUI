@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] — 2026-05-12
+
+The "actually looks good now" release. Replaces the dense scrolling QFormLayout stack from v0.5.0 with a single-page progressive-disclosure layout themed in Cherry red on a dark base. Functional behavior (download, probe, merge, mirrors) is unchanged — this is purely structure + styling.
+
+### Changed
+
+- **Layout** — single-page progressive disclosure. Main view shows only the essentials (collection IDs, output, add-to picker, two parallelism spinboxes, Start, status, progress, log). Everything else (paths, behavior toggles, import delay, realm-recovery) lives behind a collapsible "Advanced" expander that's closed by default.
+- **Theme** — module-level QSS applied to QApplication. Cherry red accent (#e3344f → #ffa15f gradient on Start button and progress bar) on a #1e1e26 surface. Custom-styled QSpinBox arrows, QCheckBox indicators, scrollbars, and dropdowns. Title bar reads "osu-collector-gui by Red".
+- **Default window size** 900×950 → 520×680 (480×500 min). The QScrollArea wrap from v0.5.0 is gone — the layout fits.
+- **Default picker** is "(one collection per osu!collector collection)" — preserves v0.6.x merge-by-default. "Don't merge" is now an explicit option in the picker.
+- **Start button** disabled until at least one non-whitespace character appears in the Collection IDs field. Replaced with a neutral-styled Cancel button during a run.
+- **Log box** always visible (~110px, monospace 11px) with idle placeholder "Ready. Paste a collection ID above and click Start to begin."
+
+### Removed
+
+- **"Download beatmaps" toggle** — always on. Disabling it disabled the core feature, so it was dead UI.
+- **"Add downloaded maps to osu!lazer collections" master toggle** — subsumed by the "Don't merge" option in the Add-to picker.
+- **Per-beatmap progress bar** — redundant with the per-line log output.
+- **`showEvent` / `_recompute_scroll_layout` machinery** from v0.6.1 — no scroll area means no scroll-recomputation needed.
+
+### Other
+
+- New `advanced_expanded` settings key persists whether the Advanced section was open at last close. New users default to collapsed.
+- New `tests/test_main_window.py` with 8 unit tests for the pure-function UI helpers (`should_enable_start`, target-combo sentinel labels).
+
 ## [0.6.2] — 2026-05-12
 
 ### Fixed
