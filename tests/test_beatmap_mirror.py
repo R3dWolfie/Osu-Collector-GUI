@@ -31,20 +31,20 @@ def test_round_robin_with_single_mirror_is_no_op():
 
 
 def test_dead_mirror_is_filtered_out_of_urls_for_set():
-    BeatmapMirror.reset_dead_mirrors()
+    BeatmapMirror.reset_state()
     m = BeatmapMirror(primary="https://a", fallbacks=["https://b", "https://c"])
     BeatmapMirror._mark_dead("https://a")
     assert m._urls_for_set(0) == ["https://b", "https://c"]
-    BeatmapMirror.reset_dead_mirrors()
+    BeatmapMirror.reset_state()
 
 
 def test_all_dead_mirrors_still_returns_full_list_as_fallback():
     # If literally every mirror is blacklisted, we shouldn't refuse to
     # try at all — return them all and let the request layer surface
     # the failure naturally.
-    BeatmapMirror.reset_dead_mirrors()
+    BeatmapMirror.reset_state()
     m = BeatmapMirror(primary="https://a", fallbacks=["https://b"])
     BeatmapMirror._mark_dead("https://a")
     BeatmapMirror._mark_dead("https://b")
     assert m._urls_for_set(0) == ["https://a", "https://b"]
-    BeatmapMirror.reset_dead_mirrors()
+    BeatmapMirror.reset_state()

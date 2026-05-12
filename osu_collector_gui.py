@@ -226,10 +226,14 @@ class BeatmapMirror:
     mirror, wasting ~10s connect-timeout each.
     """
 
-    # Class-level cache: {url -> monotonic_until}. Each parallel download
-    # slot sees the same blacklist within the lifetime of the process.
+    # Class-level shared state, all guarded by _state_lock:
+    #   _dead_until: {url -> monotonic time the blacklist expires}
+    #   _active:     {url -> current concurrent-download count}
+    # The lock is held ONLY during pick + increment/decrement. HTTP
+    # I/O never runs under the lock.
     _dead_until: dict[str, float] = {}
-    _dead_lock = __import__("threading").Lock()
+    _active: dict[str, int] = {}
+    _state_lock = __import__("threading").Lock()
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
@@ -241,7 +245,7 @@ class BeatmapMirror:
 
     @classmethod
     def _is_dead(cls, url: str) -> bool:
-        with cls._dead_lock:
+        with cls._state_lock:
             until = cls._dead_until.get(url, 0.0)
             if until > time.monotonic():
                 return True
@@ -251,14 +255,15 @@ class BeatmapMirror:
 
     @classmethod
     def _mark_dead(cls, url: str) -> None:
-        with cls._dead_lock:
+        with cls._state_lock:
             cls._dead_until[url] = time.monotonic() + MIRROR_DEAD_TTL_S
 
     @classmethod
-    def reset_dead_mirrors(cls) -> None:
-        """Used by tests; can also be called between runs to force a retry."""
-        with cls._dead_lock:
+    def reset_state(cls) -> None:
+        """Clear dead-cache + active counts. For tests + manual reset."""
+        with cls._state_lock:
             cls._dead_until.clear()
+            cls._active.clear()
 
     def _urls_for_set(self, set_id: int) -> list[str]:
         """Return urls in order, with rotation if round_robin and skipping
