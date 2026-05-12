@@ -617,6 +617,17 @@ def merge_collection_lists(
 # ourselves and use CM purely as a Realm <-> .osdb codec.
 
 @dataclass
+class ProbeResult:
+    """Result of asking CM CLI which beatmap_ids lazer has imported.
+
+    `resolved` maps beatmap_id → BeatmapInfo with lazer's current md5
+    and metadata. Any beatmap_id NOT in `resolved` is implicitly "lazer
+    doesn't have it" — we don't need an explicit unresolved set.
+    """
+    resolved: dict[int, BeatmapInfo] = field(default_factory=dict)
+
+
+@dataclass
 class CmCliConfig:
     command: list[str]          # full argv prefix to invoke CM CLI
     osu_location: str | None    # passed via -l (auto-detect if None)
@@ -653,6 +664,64 @@ class CmCliRunner:
                 "-o", str(realm_path),
                 "-s"]
         self._run(argv)
+
+    def probe_imported_beatmaps(self, realm_path: Path,
+                                beatmap_ids: list[int]) -> ProbeResult:
+        """Ask CM CLI which of `beatmap_ids` lazer's BeatmapInfo DB knows.
+
+        Runs `cm.exe create -b <bids_file> -o probe.osdb -l <realm_parent>`.
+        CM loads lazer's beatmap DB (because of -l) and enriches each id it
+        recognizes with full metadata. Unrecognized ids end up as hash-only
+        entries in the resulting .osdb (which we don't need to parse — they
+        have beatmap_id=0 when OsdbReader returns them, easy to filter out).
+
+        The bids file and probe.osdb live in the realm's parent .oc-gui-tmp/
+        dir — same wine-sandbox-safe convention used by the merge step.
+
+        Fail-open: any error returns an empty ProbeResult so the caller
+        falls through to downloading everything (vs. fail-closed merge
+        step, which refuses to write on read failure).
+        """
+        if not beatmap_ids:
+            return ProbeResult()
+
+        tmp_dir = realm_path.parent / ".oc-gui-tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        bids_file = tmp_dir / "probe-bids.txt"
+        probe_osdb = tmp_dir / "probe.osdb"
+
+        try:
+            bids_file.write_text("\n".join(str(b) for b in beatmap_ids))
+
+            argv = [*self.cfg.command, "create",
+                    "-b", str(bids_file),
+                    "-o", str(probe_osdb),
+                    "-l", str(realm_path.parent)]
+            self._run(argv)
+
+            if not probe_osdb.exists() or probe_osdb.stat().st_size == 0:
+                return ProbeResult()
+
+            parsed = OsdbReader.read(probe_osdb)
+            if not parsed:
+                return ProbeResult()
+
+            # probe.osdb contains exactly one synthetic collection;
+            # resolved entries have beatmap_id > 0, hash-only entries
+            # have beatmap_id == 0 (and we don't care about them).
+            resolved = {bm.beatmap_id: bm
+                        for c in parsed
+                        for bm in c.beatmaps
+                        if bm.beatmap_id > 0}
+            return ProbeResult(resolved=resolved)
+        except Exception:
+            return ProbeResult()
+        finally:
+            try:
+                probe_osdb.unlink(missing_ok=True)
+            except OSError:
+                pass
+
 
     DEBUG_LOG = Path("/tmp/oc-cm-cli-debug.log") if sys.platform != "win32" \
         else Path(os.environ.get("TEMP", ".")) / "oc-cm-cli-debug.log"
