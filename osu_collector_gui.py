@@ -85,6 +85,7 @@ FALLBACK_MIRRORS = [
 # Network limits — be polite to the mirrors
 DOWNLOAD_PARALLEL = 4   # how many .osz fetches in parallel within a collection
 DOWNLOAD_TIMEOUT_S = 120
+DOWNLOAD_CONNECT_TIMEOUT_S = 10   # fail fast if a mirror is rate-limiting our IP
 HTTP_RETRIES = 3
 HTTP_BACKOFF_S = 2
 
@@ -237,7 +238,8 @@ class BeatmapMirror:
             for attempt in range(HTTP_RETRIES):
                 try:
                     with self.session.get(url, stream=True,
-                                          timeout=DOWNLOAD_TIMEOUT_S,
+                                          timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
+                                                   DOWNLOAD_TIMEOUT_S),
                                           allow_redirects=True) as r:
                         if r.status_code == 404:
                             # Beatmap genuinely missing — no point retrying.
