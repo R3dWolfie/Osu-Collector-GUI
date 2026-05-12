@@ -35,6 +35,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -49,6 +50,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -2057,314 +2059,275 @@ class MainWindow(QMainWindow):
     # ----- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        # The central widget is a QScrollArea wrapping a regular QWidget.
-        # This is the only sane way to host this many form rows without
-        # the QFormLayout collapsing rows or clipping fields when the
-        # window is at minimum size.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Single-page progressive disclosure. No QScrollArea — the layout
+        # fits in a 520x680 window. Advanced section is collapsible.
 
-        root = QWidget()
-        root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        layout = QVBoxLayout(root)
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
 
-        # --- collection IDs ---
-        ids_group = QGroupBox("Collections to download")
-        ids_layout = QVBoxLayout(ids_group)
-        ids_layout.addWidget(QLabel(
-            "Paste collection URLs or IDs, one per line:\n"
-            "  https://osucollector.com/collections/1833/tech\n"
-            "  1838"
-        ))
+        # --- Collection IDs ---
+        ids_label = QLabel("Collection IDs")
+        ids_label.setProperty("role", "micro")
+        root.addWidget(ids_label)
         self.ids_edit = QPlainTextEdit()
-        self.ids_edit.setPlaceholderText(
-            "1833\nhttps://osucollector.com/collections/44/speed-practice\n…"
-        )
-        ids_layout.addWidget(self.ids_edit)
-        layout.addWidget(ids_group)
+        self.ids_edit.setPlaceholderText("paste osu!collector IDs…  (comma or whitespace separated)")
+        self.ids_edit.setMaximumHeight(60)
+        self.ids_edit.textChanged.connect(self._update_start_enabled)
+        root.addWidget(self.ids_edit)
 
-        # --- output dir ---
-        dir_group = QGroupBox("Output folder")
-        dir_layout = QHBoxLayout(dir_group)
+        # --- Output folder + Add to picker (two columns) ---
+        two_col = QHBoxLayout()
+        two_col.setSpacing(6)
+
+        # Left col: Output folder
+        out_col = QVBoxLayout()
+        out_col.setSpacing(4)
+        out_label = QLabel("Output")
+        out_label.setProperty("role", "micro")
+        out_col.addWidget(out_label)
+        out_row = QHBoxLayout()
+        out_row.setSpacing(0)
         self.dir_edit = QLineEdit(self.settings.get(
-            "last_output_dir", str(Path.home() / "Downloads")
+            "last_output_dir", str(Path.home() / "osu-collections")
         ))
-        browse = QPushButton("Browse…")
-        browse.clicked.connect(self._on_browse)
-        dir_layout.addWidget(self.dir_edit)
-        dir_layout.addWidget(browse)
-        layout.addWidget(dir_group)
+        self.dir_browse_btn = QToolButton()
+        self.dir_browse_btn.setText("📁")
+        self.dir_browse_btn.clicked.connect(self._on_browse)
+        out_row.addWidget(self.dir_edit)
+        out_row.addWidget(self.dir_browse_btn)
+        out_col.addLayout(out_row)
+        two_col.addLayout(out_col, stretch=1)
 
-        # --- what to do ---
-        what_group = QGroupBox("What to download")
-        what_layout = QVBoxLayout(what_group)
-
-        self.download_beatmaps_cb = QCheckBox("Download beatmap sets (.osz)")
-        self.download_beatmaps_cb.setChecked(
-            self.settings.get("download_beatmaps", True)
-        )
-        what_layout.addWidget(self.download_beatmaps_cb)
-
-        self.generate_osdb_cb = QCheckBox(
-            "Generate .osdb files (Collection Manager / osu!lazer compatible)"
-        )
-        self.generate_osdb_cb.setChecked(
-            self.settings.get("generate_osdb", True)
-        )
-        what_layout.addWidget(self.generate_osdb_cb)
-
-        self.auto_import_cb = QCheckBox(
-            "Auto-import each beatmap into osu!lazer as it finishes downloading"
-        )
-        self.auto_import_cb.setChecked(self.settings.get("auto_import", True))
-        what_layout.addWidget(self.auto_import_cb)
-
-        self.consolidate_cb = QCheckBox(
-            "After downloads finish, move all .osdb files into <output>/db/"
-        )
-        self.consolidate_cb.setChecked(self.settings.get("consolidate_osdb", True))
-        what_layout.addWidget(self.consolidate_cb)
-
-        self.cleanup_cb = QCheckBox(
-            "Delete per-collection download folders after import is done "
-            "(saves disk; lazer already has its own copies)"
-        )
-        self.cleanup_cb.setChecked(self.settings.get("cleanup_after_import", True))
-        self.cleanup_cb.setToolTip(
-            "Once you've confirmed osu!lazer finished importing the maps,\n"
-            "deletes the '<id> - <name>' folders that contain the .osz\n"
-            "files. The /db subfolder, .osdb files, and anything that\n"
-            "looks like a Realm file are NEVER touched."
-        )
-        what_layout.addWidget(self.cleanup_cb)
-
-        layout.addWidget(what_group)
-
-        # --- tuning ---
-        tune_group = QGroupBox("Tuning")
-        tune_form = QFormLayout(tune_group)
-        tune_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        tune_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-
-        self.import_parallel_spin = QSpinBox()
-        self.import_parallel_spin.setRange(1, 8)
-        self.import_parallel_spin.setValue(int(self.settings.get("import_parallel", 1)))
-        self.import_parallel_spin.setToolTip(
-            "How many beatmaps to import into osu!lazer in parallel.\n"
-            "1 = strictly one-at-a-time (safest, slowest).\n"
-            "Higher = faster but more risk of choking osu!lazer.\n"
-            "Beatmap downloads are always 4-parallel — this only affects imports."
-        )
-        tune_form.addRow("Import parallelism:", self.import_parallel_spin)
-
-        self.download_parallel_spin = QSpinBox()
-        self.download_parallel_spin.setRange(1, 32)
-        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 10)))
-        self.download_parallel_spin.setToolTip(
-            "How many .osz downloads to run in parallel per collection.\n"
-            "Higher = faster on fast connections, but be polite to mirrors —\n"
-            "above ~16 some mirrors may throttle. Round-robins across\n"
-            "catboy.best, nerinyan.moe, and osu.direct to spread the load."
-        )
-        tune_form.addRow("Parallel downloads:", self.download_parallel_spin)
-
-        self.import_delay_spin = QSpinBox()
-        self.import_delay_spin.setRange(0, 5000)
-        self.import_delay_spin.setSuffix(" ms")
-        self.import_delay_spin.setSingleStep(50)
-        self.import_delay_spin.setValue(int(self.settings.get("import_delay_ms", 200)))
-        self.import_delay_spin.setToolTip(
-            "Minimum delay between auto-import calls to osu!lazer.\n"
-            "Composes with 'Import parallelism' above — parallelism caps\n"
-            "burst size, delay caps steady-state rate.\n"
-            "Increase this if osu!lazer crashes or chokes during a big batch."
-        )
-        tune_form.addRow("Import delay:", self.import_delay_spin)
-
-        osu_path_row = QHBoxLayout()
-        self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
-        self.osu_path_edit.setPlaceholderText("(auto-detect)")
-        osu_browse = QPushButton("Browse…")
-        osu_browse.clicked.connect(self._on_browse_osu)
-        osu_path_row.addWidget(self.osu_path_edit)
-        osu_path_row.addWidget(osu_browse)
-        osu_row_w = QWidget()
-        osu_row_w.setLayout(osu_path_row)
-        tune_form.addRow("osu!lazer binary:", osu_row_w)
-
-        layout.addWidget(tune_group)
-
-        # --- lazer collection merging via Collection Manager CLI ---
-        lazer_group = QGroupBox("Add downloaded maps to osu!lazer collections")
-        lazer_form = QFormLayout(lazer_group)
-        lazer_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        lazer_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-
-        self.add_to_lazer_cb = QCheckBox(
-            "Merge generated .osdb files into osu!lazer's collection database"
-        )
-        self.add_to_lazer_cb.setChecked(
-            self.settings.get("add_to_lazer_collections", False)
-        )
-        self.add_to_lazer_cb.setToolTip(
-            "Uses Collection Manager CLI to round-trip your existing\n"
-            "lazer collections + the new ones into a merged client.realm.\n"
-            "Requires Collection Manager installed.\n"
-            "osu!lazer will be terminated during the merge and (optionally)\n"
-            "relaunched afterwards."
-        )
-        lazer_form.addRow(self.add_to_lazer_cb)
-
-        self.skip_imported_cb = QCheckBox(
-            "Skip beatmapsets already imported in osu!lazer"
-        )
-        self.skip_imported_cb.setChecked(
-            bool(self.settings.get("skip_already_imported", True))
-        )
-        self.skip_imported_cb.setToolTip(
-            "Before downloading, ask Collection Manager CLI which beatmaps\n"
-            "your osu!lazer install already has. Skip the .osz download for\n"
-            "those sets — but still add them to the lazer collection so\n"
-            "huge collections (e.g. 17391) compose without redownloading\n"
-            "thousands of maps you already have.\n"
-            "\n"
-            "Requires Collection Manager CLI (configured below) and the\n"
-            "merge feature above to be ON."
-        )
-        lazer_form.addRow(self.skip_imported_cb)
-
-        cm_row = QHBoxLayout()
-        # cm_cli_command is stored as a list in settings (canonical), but
-        # the QLineEdit shows a shell-quoted string for editing convenience.
-        # Legacy: an older version stored it as a raw space-joined string,
-        # which broke for paths with spaces. We silently discard those —
-        # the user just needs to click Auto-detect once.
-        _saved_cmd = self.settings.get("cm_cli_command", [])
-        if isinstance(_saved_cmd, list) and _saved_cmd:
-            _saved_cmd_text = shlex.join(_saved_cmd)
-        else:
-            _saved_cmd_text = ""
-        self.cm_cli_edit = QLineEdit(_saved_cmd_text)
-        self.cm_cli_edit.setPlaceholderText(
-            "(auto-detect: wine flatpak or native CM CLI)"
-        )
-        cm_detect = QPushButton("Auto-detect")
-        cm_detect.clicked.connect(self._on_detect_cm)
-        cm_row.addWidget(self.cm_cli_edit)
-        cm_row.addWidget(cm_detect)
-        cm_w = QWidget(); cm_w.setLayout(cm_row)
-        lazer_form.addRow("CM CLI command:", cm_w)
-
-        realm_row = QHBoxLayout()
-        self.realm_edit = QLineEdit(self.settings.get(
-            "lazer_realm_path",
-            str(_default_lazer_realm_path()),
-        ))
-        realm_browse = QPushButton("Browse…")
-        realm_browse.clicked.connect(self._on_browse_realm)
-        realm_row.addWidget(self.realm_edit)
-        realm_row.addWidget(realm_browse)
-        realm_w = QWidget(); realm_w.setLayout(realm_row)
-        lazer_form.addRow("client.realm:", realm_w)
-
-        # Target picker: existing collections fetched via CM CLI, or
-        # "create new", or the default "one per osu!collector collection".
-        from PyQt6.QtWidgets import QComboBox
-        target_row = QHBoxLayout()
+        # Right col: Add-to picker with Refresh
+        addto_col = QVBoxLayout()
+        addto_col.setSpacing(4)
+        addto_label = QLabel("Add to")
+        addto_label.setProperty("role", "micro")
+        addto_col.addWidget(addto_label)
+        addto_row = QHBoxLayout()
+        addto_row.setSpacing(0)
         self.target_combo = QComboBox()
         self.target_combo.setEditable(False)
         self.target_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._reset_target_combo()
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
-        self.refresh_collections_btn = QPushButton("Refresh")
+        self.refresh_collections_btn = QToolButton()
+        self.refresh_collections_btn.setText("⟳")
         self.refresh_collections_btn.setToolTip(
-            "Fetch the list of existing osu!lazer collections by running\n"
-            "Collection Manager CLI against your client.realm."
+            "Fetch existing osu!lazer collections from your client.realm "
+            "via Collection Manager CLI."
         )
         self.refresh_collections_btn.clicked.connect(self._on_refresh_collections)
-        target_row.addWidget(self.target_combo, stretch=1)
-        target_row.addWidget(self.refresh_collections_btn)
-        target_w = QWidget(); target_w.setLayout(target_row)
-        lazer_form.addRow("Add maps to:", target_w)
+        addto_row.addWidget(self.target_combo, stretch=1)
+        addto_row.addWidget(self.refresh_collections_btn)
+        addto_col.addLayout(addto_row)
+        two_col.addLayout(addto_col, stretch=1)
+        root.addLayout(two_col)
 
-        # New-collection name field, only shown when "Create new..." picked.
+        # --- New-collection-name row (only visible when "Create new..." picked) ---
+        self.new_name_label = QLabel("New collection name")
+        self.new_name_label.setProperty("role", "micro")
+        self.new_name_label.setVisible(False)
+        root.addWidget(self.new_name_label)
         self.new_name_edit = QLineEdit()
         self.new_name_edit.setPlaceholderText("Name of the new collection")
         self.new_name_edit.setText(self.settings.get("new_collection_name", ""))
         self.new_name_edit.setVisible(False)
-        lazer_form.addRow("New collection name:", self.new_name_edit)
-        # Track the row's label widget so we can show/hide it together.
-        self._new_name_label = lazer_form.labelForField(self.new_name_edit)
-        if self._new_name_label is not None:
-            self._new_name_label.setVisible(False)
+        root.addWidget(self.new_name_edit)
 
-        self.restart_lazer_cb = QCheckBox(
-            "Restart osu!lazer after merging (otherwise just leave it closed)"
-        )
-        self.restart_lazer_cb.setChecked(
-            self.settings.get("restart_lazer_after", True)
-        )
-        lazer_form.addRow(self.restart_lazer_cb)
+        # --- Parallel downloads + Import parallelism (two columns) ---
+        spin_row = QHBoxLayout()
+        spin_row.setSpacing(6)
 
-        # Recovery row — restore client.realm from a previous backup.
-        recover_row = QHBoxLayout()
-        self.recover_btn = QPushButton("Recover realm from backup…")
-        self.recover_btn.setToolTip(
-            "Restore client.realm from a .bak-<timestamp> snapshot taken\n"
-            "before a previous merge. osu!lazer will be terminated first\n"
-            "and the current realm itself will also be backed up before\n"
-            "the restore, so this action is reversible."
-        )
-        self.recover_btn.clicked.connect(self._on_recover_realm)
-        recover_row.addStretch()
-        recover_row.addWidget(self.recover_btn)
-        lazer_form.addRow(recover_row)
+        dl_col = QVBoxLayout(); dl_col.setSpacing(4)
+        dl_label = QLabel("Downloads")
+        dl_label.setProperty("role", "micro")
+        dl_col.addWidget(dl_label)
+        self.download_parallel_spin = QSpinBox()
+        self.download_parallel_spin.setRange(1, 32)
+        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 10)))
+        dl_col.addWidget(self.download_parallel_spin)
+        spin_row.addLayout(dl_col, stretch=1)
 
-        layout.addWidget(lazer_group)
+        im_col = QVBoxLayout(); im_col.setSpacing(4)
+        im_label = QLabel("Imports")
+        im_label.setProperty("role", "micro")
+        im_col.addWidget(im_label)
+        self.import_parallel_spin = QSpinBox()
+        self.import_parallel_spin.setRange(1, 8)
+        self.import_parallel_spin.setValue(int(self.settings.get("import_parallel", 1)))
+        im_col.addWidget(self.import_parallel_spin)
+        spin_row.addLayout(im_col, stretch=1)
+        root.addLayout(spin_row)
 
-        # --- progress ---
-        prog_group = QGroupBox("Progress")
-        prog_layout = QVBoxLayout(prog_group)
-        self.col_label = QLabel("Idle.")
-        self.col_progress = QProgressBar()
-        self.col_progress.setValue(0)
-        self.beatmap_label = QLabel("")
-        self.beatmap_progress = QProgressBar()
-        self.beatmap_progress.setValue(0)
-        prog_layout.addWidget(self.col_label)
-        prog_layout.addWidget(self.col_progress)
-        prog_layout.addWidget(self.beatmap_label)
-        prog_layout.addWidget(self.beatmap_progress)
-        layout.addWidget(prog_group)
-
-        # --- log ---
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(2000)
-        layout.addWidget(self.log_view, stretch=1)
-
-        # --- buttons ---
-        btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("Start download")
+        # --- Start / Cancel buttons (Start visible by default, Cancel hidden) ---
+        self.start_btn = QPushButton("⬇  Start download")
+        self.start_btn.setObjectName("primaryBtn")
         self.start_btn.clicked.connect(self._on_start)
-        self.cancel_btn = QPushButton("Cancel")
+        self.start_btn.setEnabled(False)  # enabled when ids_edit has content
+        root.addWidget(self.start_btn)
+
+        self.cancel_btn = QPushButton("✕  Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setEnabled(False)
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.cancel_btn)
-        btn_layout.addWidget(self.start_btn)
-        layout.addLayout(btn_layout)
+        self.cancel_btn.setVisible(False)
+        root.addWidget(self.cancel_btn)
 
-        scroll.setWidget(root)
-        self.setCentralWidget(scroll)
+        # --- Status line ---
+        self.status_label = QLabel("Ready")
+        self.status_label.setProperty("role", "status")
+        root.addWidget(self.status_label)
 
-        # Keep the skip-imported checkbox grey when CM CLI or merge are unset.
-        self.add_to_lazer_cb.toggled.connect(self._update_skip_imported_enabled)
+        # --- Progress bar (hidden when idle) ---
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        root.addWidget(self.progress_bar)
+
+        # --- Log box (always visible, ~110px) ---
+        self.log_box = QPlainTextEdit()
+        self.log_box.setObjectName("logBox")
+        self.log_box.setReadOnly(True)
+        self.log_box.setMinimumHeight(110)
+        self.log_box.setMaximumHeight(180)
+        self.log_box.setPlainText(
+            "Ready. Paste a collection ID above and click Start to begin."
+        )
+        root.addWidget(self.log_box)
+
+        # --- Advanced expander + container ---
+        self.advanced_expander = QToolButton()
+        self.advanced_expander.setObjectName("advancedExpander")
+        self.advanced_expander.setCheckable(True)
+        self.advanced_expander.setText("▸ Advanced")
+        self.advanced_expander.toggled.connect(self._on_advanced_toggled)
+        root.addWidget(self.advanced_expander)
+
+        self.advanced_container = QWidget()
+        self._build_advanced(self.advanced_container)
+        self.advanced_container.setVisible(False)
+        root.addWidget(self.advanced_container)
+
+        # Restore advanced-expanded state from settings.
+        if self.settings.get("advanced_expanded", False):
+            self.advanced_expander.setChecked(True)
+            self.advanced_expander.setText("▾ Advanced")
+            self.advanced_container.setVisible(True)
+
+        # Initial Start-button state based on whatever the ids_edit holds.
+        self._update_start_enabled()
+
+    def _build_advanced(self, parent: QWidget) -> None:
+        """Build the contents of the collapsible Advanced section."""
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(6)
+
+        # ---- Paths subgroup ----
+        paths_label = QLabel("Paths")
+        paths_label.setProperty("role", "subgroup")
+        layout.addWidget(paths_label)
+
+        layout.addWidget(self._small_label("CM CLI command"))
+        cm_row = QHBoxLayout(); cm_row.setSpacing(0)
+        _saved_cmd = self.settings.get("cm_cli_command", [])
+        _saved_cmd_text = shlex.join(_saved_cmd) if isinstance(_saved_cmd, list) and _saved_cmd else ""
+        self.cm_cli_edit = QLineEdit(_saved_cmd_text)
+        self.cm_cli_edit.setPlaceholderText("(auto-detect: wine flatpak or native CM CLI)")
         self.cm_cli_edit.textChanged.connect(self._update_skip_imported_enabled)
-        # Apply the initial enable state for the skip-imported checkbox.
+        cm_detect = QToolButton()
+        cm_detect.setText("Auto-detect")
+        cm_detect.clicked.connect(self._on_detect_cm)
+        cm_row.addWidget(self.cm_cli_edit)
+        cm_row.addWidget(cm_detect)
+        layout.addLayout(cm_row)
+
+        layout.addWidget(self._small_label("client.realm"))
+        realm_row = QHBoxLayout(); realm_row.setSpacing(0)
+        self.realm_edit = QLineEdit(self.settings.get(
+            "lazer_realm_path", str(_default_lazer_realm_path())
+        ))
+        realm_browse = QToolButton()
+        realm_browse.setText("📁")
+        realm_browse.clicked.connect(self._on_browse_realm)
+        realm_row.addWidget(self.realm_edit)
+        realm_row.addWidget(realm_browse)
+        layout.addLayout(realm_row)
+
+        layout.addWidget(self._small_label("osu!lazer binary"))
+        osu_row = QHBoxLayout(); osu_row.setSpacing(0)
+        self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
+        self.osu_path_edit.setPlaceholderText("(auto-detect)")
+        osu_browse = QToolButton()
+        osu_browse.setText("📁")
+        osu_browse.clicked.connect(self._on_browse_osu)
+        osu_row.addWidget(self.osu_path_edit)
+        osu_row.addWidget(osu_browse)
+        layout.addLayout(osu_row)
+
+        # ---- Behavior subgroup ----
+        beh_label = QLabel("Behavior")
+        beh_label.setProperty("role", "subgroup")
+        layout.addWidget(beh_label)
+
+        self.auto_import_cb = QCheckBox("Auto-import maps into osu!lazer")
+        self.auto_import_cb.setChecked(bool(self.settings.get("auto_import", True)))
+        layout.addWidget(self.auto_import_cb)
+
+        self.skip_imported_cb = QCheckBox("Skip beatmapsets already imported")
+        self.skip_imported_cb.setChecked(bool(self.settings.get("skip_already_imported", True)))
+        layout.addWidget(self.skip_imported_cb)
+
+        self.restart_lazer_cb = QCheckBox("Restart osu!lazer after merging")
+        self.restart_lazer_cb.setChecked(bool(self.settings.get("restart_lazer_after", True)))
+        layout.addWidget(self.restart_lazer_cb)
+
+        self.generate_osdb_cb = QCheckBox("Generate .osdb files (export-only)")
+        self.generate_osdb_cb.setChecked(bool(self.settings.get("generate_osdb", False)))
+        layout.addWidget(self.generate_osdb_cb)
+
+        self.consolidate_cb = QCheckBox("Consolidate .osdb into db/ subfolder")
+        self.consolidate_cb.setChecked(bool(self.settings.get("consolidate_osdb", False)))
+        layout.addWidget(self.consolidate_cb)
+
+        self.cleanup_cb = QCheckBox("Cleanup folders after import")
+        self.cleanup_cb.setChecked(bool(self.settings.get("cleanup_after_import", False)))
+        layout.addWidget(self.cleanup_cb)
+
+        # ---- Tuning subgroup ----
+        tun_label = QLabel("Tuning")
+        tun_label.setProperty("role", "subgroup")
+        layout.addWidget(tun_label)
+
+        layout.addWidget(self._small_label("Import delay"))
+        self.import_delay_spin = QSpinBox()
+        self.import_delay_spin.setRange(0, 5000)
+        self.import_delay_spin.setSuffix(" ms")
+        self.import_delay_spin.setSingleStep(50)
+        self.import_delay_spin.setValue(int(self.settings.get("import_delay_ms", 300)))
+        layout.addWidget(self.import_delay_spin)
+
+        # ---- Maintenance subgroup ----
+        maint_label = QLabel("Maintenance")
+        maint_label.setProperty("role", "subgroup")
+        layout.addWidget(maint_label)
+
+        self.recover_realm_btn = QPushButton("Recover realm from backup…")
+        self.recover_realm_btn.clicked.connect(self._on_recover_realm)
+        layout.addWidget(self.recover_realm_btn)
+
+        # Keep the skip-imported gating logic alive even though the checkbox
+        # is now buried in Advanced (still needs CM CLI to be configured).
         self._update_skip_imported_enabled()
+
+    @staticmethod
+    def _small_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("role", "micro")
+        return lbl
 
     # ----- settings persistence -------------------------------------------
 
@@ -2388,7 +2351,6 @@ class MainWindow(QMainWindow):
                 cm_list = cm_text.split()
         CONFIG_FILE.write_text(json.dumps({
             "last_output_dir": self.dir_edit.text(),
-            "download_beatmaps": self.download_beatmaps_cb.isChecked(),
             "generate_osdb": self.generate_osdb_cb.isChecked(),
             "auto_import": self.auto_import_cb.isChecked(),
             "consolidate_osdb": self.consolidate_cb.isChecked(),
@@ -2397,13 +2359,13 @@ class MainWindow(QMainWindow):
             "download_parallel": self.download_parallel_spin.value(),
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
-            "add_to_lazer_collections": self.add_to_lazer_cb.isChecked(),
             "skip_already_imported": self.skip_imported_cb.isChecked(),
             "cm_cli_command": cm_list,
             "lazer_realm_path": self.realm_edit.text(),
             "target_collection": self.target_combo.currentText(),
             "new_collection_name": self.new_name_edit.text(),
             "restart_lazer_after": self.restart_lazer_cb.isChecked(),
+            "advanced_expanded": self.advanced_expander.isChecked(),
         }, indent=2))
 
     # ----- event handlers --------------------------------------------------
@@ -2416,6 +2378,13 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
         super().closeEvent(event)
+
+    def _update_start_enabled(self) -> None:
+        self.start_btn.setEnabled(should_enable_start(self.ids_edit.toPlainText()))
+
+    def _on_advanced_toggled(self, checked: bool) -> None:
+        self.advanced_container.setVisible(checked)
+        self.advanced_expander.setText("▾ Advanced" if checked else "▸ Advanced")
 
     def showEvent(self, event) -> None:    # noqa: N802 (Qt override)
         super().showEvent(event)
@@ -2577,8 +2546,7 @@ class MainWindow(QMainWindow):
         text = self.target_combo.currentText()
         show_new = (text == self.NEW_TARGET)
         self.new_name_edit.setVisible(show_new)
-        if self._new_name_label is not None:
-            self._new_name_label.setVisible(show_new)
+        self.new_name_label.setVisible(show_new)
         if show_new:
             self.new_name_edit.setFocus()
 
@@ -2597,23 +2565,13 @@ class MainWindow(QMainWindow):
         return None
 
     def _update_skip_imported_enabled(self) -> None:
-        """Enable the skip-imported checkbox only when CM CLI + add-to-lazer
-        are both configured. Grey out with explanatory tooltip otherwise."""
+        """Enable the skip-imported checkbox only when CM CLI is configured."""
         cm_ok = bool(self._resolve_cm_cli())
-        merge_on = self.add_to_lazer_cb.isChecked()
-        self.skip_imported_cb.setEnabled(cm_ok and merge_on)
+        self.skip_imported_cb.setEnabled(cm_ok)
         if not cm_ok:
             self.skip_imported_cb.setToolTip(
-                "Configure Collection Manager CLI below to enable this option."
+                "Configure Collection Manager CLI in Advanced to enable this option."
             )
-        elif not merge_on:
-            self.skip_imported_cb.setToolTip(
-                "Enable 'Merge generated .osdb files into osu!lazer's "
-                "collection database' above to use this."
-            )
-        # When enabled, keep the original tooltip (Qt remembers the most-
-        # recently-set value, so don't reset it here — the initial setToolTip
-        # in _build_ui covers the enabled case).
 
     def _on_refresh_collections(self) -> None:
         """Run CM CLI export to read existing lazer collection names."""
@@ -2866,69 +2824,39 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
 
-        if (not self.download_beatmaps_cb.isChecked()
-                and not self.generate_osdb_cb.isChecked()):
-            QMessageBox.warning(
-                self, APP_NAME,
-                "Nothing to do — tick at least one of "
-                "'Download beatmap sets' or 'Generate .osdb files'."
-            )
-            return
+        # Resolve CM CLI for collection-merging features (skip-imported etc.).
+        # cm_cli_cmd is None when the user hasn't configured CM CLI — that's fine;
+        # add_to_lazer_collections will be False in that case.
+        cm_cli_cmd: list[str] | None = self._resolve_cm_cli()
 
-        # Validate the lazer-merge config if the user enabled it.
-        add_to_lazer = self.add_to_lazer_cb.isChecked()
-        cm_cli_cmd: list[str] | None = None
-        if add_to_lazer:
-            if not self.generate_osdb_cb.isChecked():
-                QMessageBox.warning(
-                    self, APP_NAME,
-                    "Adding to osu!lazer collections requires .osdb generation. "
-                    "Tick 'Generate .osdb files' too."
-                )
-                return
-            raw = self.cm_cli_edit.text().strip()
-            if not raw:
-                cfg = CmCliRunner.autodetect()
-                if cfg is None:
-                    QMessageBox.warning(
-                        self, APP_NAME,
-                        "Collection Manager CLI not found. Set its path "
-                        "in the 'Lazer collections' section, or untick "
-                        "'Merge generated .osdb files…'."
-                    )
-                    return
-                cm_cli_cmd = cfg.command
-                self.cm_cli_edit.setText(shlex.join(cfg.command))
-            else:
-                try:
-                    cm_cli_cmd = shlex.split(raw)
-                except ValueError:
-                    cm_cli_cmd = raw.split()
+        # Determine whether to add maps to lazer collections: requires a
+        # target other than the default "one per collection" to be selected,
+        # or any target when CM CLI is configured (so the .osdb round-trip works).
+        target_text = self.target_combo.currentText()
+        add_to_lazer = bool(cm_cli_cmd) and (target_text != self.DEFAULT_TARGET or cm_cli_cmd)
 
         # Resolve the target collection choice into a single name override
         # (or None if the user wants the default per-collection naming).
-        target_text = self.target_combo.currentText()
         target_name: str | None = None
-        if add_to_lazer:
-            if target_text == self.NEW_TARGET:
-                new_name = self.new_name_edit.text().strip()
-                if not new_name:
-                    QMessageBox.warning(
-                        self, APP_NAME,
-                        "Pick a name for the new collection."
-                    )
-                    return
-                target_name = new_name
-            elif target_text and target_text != self.DEFAULT_TARGET:
-                # Pulled from existing list — use userData when present
-                # (the visible label has " (N maps)" appended).
-                ud = self.target_combo.currentData()
-                target_name = ud if ud else target_text
+        if target_text == self.NEW_TARGET:
+            new_name = self.new_name_edit.text().strip()
+            if not new_name:
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    "Pick a name for the new collection."
+                )
+                return
+            target_name = new_name
+        elif target_text and target_text != self.DEFAULT_TARGET:
+            # Pulled from existing list — use userData when present
+            # (the visible label has " (N maps)" appended).
+            ud = self.target_combo.currentData()
+            target_name = ud if ud else target_text
 
         job = DownloadJob(
             collection_ids=ids,
             output_dir=out_dir,
-            download_beatmaps=self.download_beatmaps_cb.isChecked(),
+            download_beatmaps=True,
             generate_osdb=self.generate_osdb_cb.isChecked(),
             auto_import=self.auto_import_cb.isChecked(),
             osu_binary=self.osu_path_edit.text().strip() or None,
@@ -2962,11 +2890,10 @@ class MainWindow(QMainWindow):
         self.thread.start()
 
         self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.col_label.setText("Starting…")
-        self.col_progress.setValue(0)
-        self.beatmap_label.setText("")
-        self.beatmap_progress.setValue(0)
+        self.cancel_btn.setVisible(True)
+        self.status_label.setText("Starting…")
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
 
     def _on_cancel(self) -> None:
         if self.worker:
@@ -2990,24 +2917,22 @@ class MainWindow(QMainWindow):
     # ----- worker signal handlers ------------------------------------------
 
     def _append_log(self, msg: str) -> None:
-        self.log_view.appendPlainText(msg)
+        self.log_box.appendPlainText(msg)
 
     def _on_collection_started(self, idx: int, total: int, name: str, n_sets: int) -> None:
-        self.col_label.setText(f"Collection {idx}/{total} — {name}  ({n_sets} sets)")
+        self.status_label.setText(f"Collection {idx}/{total} — {name}  ({n_sets} sets)")
         if total > 0:
-            self.col_progress.setMaximum(total)
-            self.col_progress.setValue(idx - 1)
-        self.beatmap_label.setText("Fetching…")
-        self.beatmap_progress.setMaximum(max(n_sets, 1))
-        self.beatmap_progress.setValue(0)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setMaximum(total * max(n_sets, 1))
+            self.progress_bar.setValue((idx - 1) * max(n_sets, 1))
 
     def _on_beatmap_progress(self, current: int, total: int) -> None:
-        self.beatmap_progress.setMaximum(max(total, 1))
-        self.beatmap_progress.setValue(current)
-        self.beatmap_label.setText(f"Beatmap {current} / {total}")
+        self.status_label.setText(f"Beatmap {current} / {total}")
+        self.progress_bar.setMaximum(max(total, 1))
+        self.progress_bar.setValue(current)
 
     def _on_collection_finished(self, idx: int, ok: int, total: int) -> None:
-        self.col_progress.setValue(idx)
+        pass  # progress_bar updated via _on_beatmap_progress; no separate col bar
 
     def _on_awaiting_import_confirmation(self, n_imports: int) -> None:
         """Modal prompt: 'has osu!lazer finished importing the maps?'
@@ -3044,7 +2969,8 @@ class MainWindow(QMainWindow):
 
     def _on_batch_finished(self, ok: int, total: int) -> None:
         self._append_log(f"\n[done — {ok}/{total} collections succeeded]")
-        self.col_label.setText(f"Done.  {ok}/{total} collections succeeded.")
+        self.status_label.setText(f"Done.  {ok}/{total} collections succeeded.")
+        self.progress_bar.setVisible(False)
         if self.consolidate_cb.isChecked():
             self._consolidate_osdb()
         if self.thread:
@@ -3053,7 +2979,7 @@ class MainWindow(QMainWindow):
         self.thread = None
         self.worker = None
         self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setVisible(False)
 
     def _consolidate_osdb(self) -> None:
         out_dir = Path(self.dir_edit.text()).expanduser()
