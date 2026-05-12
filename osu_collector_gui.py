@@ -330,46 +330,61 @@ class BeatmapMirror:
         return alive if alive else ordered
 
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
-        """Download .osz to dest_dir; return final path or None on failure."""
+        """Download .osz to dest_dir; return final path or None on failure.
+
+        Uses least-busy mirror selection: each iteration picks the mirror
+        with fewest active connections (excluding ones we've already
+        tried this download), increments its active count for the
+        duration of the request, then decrements on exit. Mirrors that
+        fail at the TCP-connect layer get blacklisted process-wide so
+        other parallel slots skip them.
+        """
         dest_dir.mkdir(parents=True, exist_ok=True)
         last_error: Exception | None = None
+        tried: set[str] = set()
 
-        for base_url in self._urls_for_set(beatmapset_id):
-            url = f"{base_url}/{beatmapset_id}"
-            for attempt in range(HTTP_RETRIES):
-                try:
-                    with self.session.get(url, stream=True,
-                                          timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
-                                                   DOWNLOAD_TIMEOUT_S),
-                                          allow_redirects=True) as r:
-                        if r.status_code == 404:
-                            # Beatmap genuinely missing — no point retrying.
-                            return None
-                        r.raise_for_status()
+        while True:
+            base_url = self._acquire_least_busy(self.urls, excluding=tried)
+            if base_url is None:
+                break
+            try:
+                url = f"{base_url}/{beatmapset_id}"
+                for attempt in range(HTTP_RETRIES):
+                    try:
+                        with self.session.get(url, stream=True,
+                                              timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
+                                                       DOWNLOAD_TIMEOUT_S),
+                                              allow_redirects=True) as r:
+                            if r.status_code == 404:
+                                # Beatmap genuinely missing — no point retrying.
+                                return None
+                            r.raise_for_status()
 
-                        filename = self._filename_from_response(r, beatmapset_id)
-                        dest = dest_dir / filename
-                        tmp = dest.with_suffix(dest.suffix + ".part")
-                        with open(tmp, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=64 * 1024):
-                                if chunk:
-                                    f.write(chunk)
-                        tmp.rename(dest)
-                        return dest
-                except (requests.ConnectionError, requests.Timeout) as e:
-                    # TCP-level failure: mirror is unreachable / rate-limiting
-                    # / blocking our IP. Blacklist it so other parallel slots
-                    # don't waste another connect-timeout on it. Skip remaining
-                    # retries against this mirror.
-                    self._mark_dead(base_url)
-                    last_error = e
-                    break
-                except requests.RequestException as e:
-                    last_error = e
-                    time.sleep(HTTP_BACKOFF_S * (attempt + 1))
-                    continue
+                            filename = self._filename_from_response(r, beatmapset_id)
+                            dest = dest_dir / filename
+                            tmp = dest.with_suffix(dest.suffix + ".part")
+                            with open(tmp, "wb") as f:
+                                for chunk in r.iter_content(chunk_size=64 * 1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            tmp.rename(dest)
+                            return dest
+                    except (requests.ConnectionError, requests.Timeout) as e:
+                        # TCP-level failure: blacklist this mirror so other
+                        # parallel slots skip it. Break the inner retry loop
+                        # — retrying the same dead mirror wastes time.
+                        self._mark_dead(base_url)
+                        last_error = e
+                        break
+                    except requests.RequestException as e:
+                        last_error = e
+                        time.sleep(HTTP_BACKOFF_S * (attempt + 1))
+                        continue
+                tried.add(base_url)
+            finally:
+                self._release(base_url)
 
-        # All mirrors + retries exhausted
+        # All mirrors tried and failed.
         if last_error:
             raise last_error
         return None
