@@ -109,6 +109,198 @@ CM_CLI_RELEASE_URL = (
     "download/CollectionManager-CLI.zip"
 )
 
+# ---------------------------------------------------------------------------
+# Theme — v0.7.0 Cherry red on dark base
+# ---------------------------------------------------------------------------
+#
+# Applied once via QApplication.setStyleSheet in main(). Colors:
+#   accent (Cherry):  #e3344f → #ffa15f gradient on progress + primary button
+#   surface:          #1e1e26 (window body) / #16161c (title-bar strip)
+#   fields:           #2a2a35 with #3a3a48 borders / #5a5a68 on focus
+#   text:             #e8e8ec primary / #9aa0a6 muted / #7d8090 meta
+#   semantic:         #5dd56e success (skipped) / #e3344f errors
+
+QSS = """
+QMainWindow, QWidget {
+    background-color: #1e1e26;
+    color: #e8e8ec;
+    font-family: -apple-system, "Segoe UI", "Cantarell", sans-serif;
+    font-size: 13px;
+}
+
+QLabel {
+    color: #e8e8ec;
+}
+QLabel[role="micro"] {
+    color: #7d8090;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+QLabel[role="subgroup"] {
+    color: #7d8090;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 8px;
+}
+QLabel[role="status"] {
+    color: #7d8090;
+    font-size: 11px;
+}
+
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {
+    background-color: #2a2a35;
+    border: 1px solid #3a3a48;
+    border-radius: 4px;
+    padding: 6px 9px;
+    color: #e8e8ec;
+    selection-background-color: #e3344f;
+    selection-color: white;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border-color: #5a5a68;
+}
+QLineEdit::placeholder, QPlainTextEdit::placeholder {
+    color: #5d6072;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 18px;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-top: 4px solid #9aa0a6;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    margin-right: 6px;
+}
+QComboBox QAbstractItemView {
+    background-color: #2a2a35;
+    border: 1px solid #3a3a48;
+    color: #e8e8ec;
+    selection-background-color: #e3344f;
+    selection-color: white;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    background: transparent;
+    width: 14px;
+    border: none;
+}
+QSpinBox::up-arrow {
+    image: none;
+    border-bottom: 4px solid #9aa0a6;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+}
+QSpinBox::down-arrow {
+    image: none;
+    border-top: 4px solid #9aa0a6;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+}
+
+QPushButton, QToolButton {
+    background-color: #2a2a35;
+    border: 1px solid #3a3a48;
+    border-radius: 4px;
+    padding: 7px 14px;
+    color: #e8e8ec;
+    font-weight: 500;
+}
+QPushButton:hover, QToolButton:hover {
+    border-color: #5a5a68;
+    background-color: #32323e;
+}
+QPushButton:disabled, QToolButton:disabled {
+    color: #5d6072;
+    background-color: #25252e;
+}
+QPushButton#primaryBtn {
+    background-color: #e3344f;
+    border: none;
+    color: white;
+    font-weight: 600;
+    padding: 9px 18px;
+}
+QPushButton#primaryBtn:hover { background-color: #c92d44; }
+QPushButton#primaryBtn:disabled { background-color: #4a2932; color: #8a6878; }
+
+QCheckBox {
+    color: #c0c4d0;
+    spacing: 6px;
+    font-size: 12px;
+}
+QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+    border: 1.5px solid #5d6072;
+    border-radius: 2px;
+    background: #1e1e26;
+}
+QCheckBox::indicator:checked {
+    background: #e3344f;
+    border-color: #e3344f;
+    image: none;
+}
+
+QProgressBar {
+    background-color: #2a2a35;
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+    text-align: center;
+    color: transparent;
+}
+QProgressBar::chunk {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                       stop:0 #e3344f, stop:1 #ffa15f);
+    border-radius: 3px;
+}
+
+QPlainTextEdit#logBox {
+    background-color: #0e0e14;
+    border: 1px solid #2a2a35;
+    border-radius: 3px;
+    padding: 8px 10px;
+    color: #9aa0a6;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: 11px;
+}
+
+QToolButton#advancedExpander {
+    background: transparent;
+    border: 1px solid #2a2a35;
+    color: #7d8090;
+    font-size: 11px;
+    padding: 7px 9px;
+    text-align: left;
+}
+QToolButton#advancedExpander:hover {
+    color: #e8e8ec;
+    border-color: #3a3a48;
+}
+QToolButton#advancedExpander:checked {
+    color: #e8e8ec;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #3a3a48;
+    border-radius: 4px;
+    min-height: 20px;
+}
+QScrollBar::handle:vertical:hover { background: #4a4a58; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
 
 # ---------------------------------------------------------------------------
 # osu!collector API client
@@ -2872,6 +3064,7 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
+    app.setStyleSheet(QSS)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     win = MainWindow()
