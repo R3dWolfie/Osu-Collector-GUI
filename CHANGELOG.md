@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] — 2026-05-12
+
+The "stop redownloading maps I already have" release. Huge osu!collector collections (e.g. 17391 with ~11k maps) now skip downloading any beatmapset where lazer already has at least one diff imported — but still compose the full collection in lazer.
+
+### Added
+
+- **Skip beatmapsets already imported in osu!lazer.** New checkbox under "Lazer collections". Before downloads start, Collection Manager CLI probes lazer's BeatmapInfo DB (`cm.exe create -b <bids> -l <realm-parent>`) to learn which beatmap_ids it has. Sets with at least one imported diff are skipped; their md5s still land in the resulting lazer collection so it composes correctly. Bonus: the .osdb is written using lazer's current md5 for resolved maps so collection entries aren't "ghost" rows when the mapper has updated diffs.
+- **Configurable parallel download count.** New "Parallel downloads" spinbox (1..32, default 4 to preserve previous behavior). Above ~8, requests round-robin across the three configured mirrors (catboy.best / nerinyan.moe / osu.direct) so a single mirror doesn't take all the load.
+- **Mirror round-robin** in `BeatmapMirror.download()` — each `set_id` picks a different primary URL via `set_id % len(urls)`, with the other mirrors retained as fallbacks. Disabled by passing `round_robin=False` to the constructor.
+
+### Other
+
+- New `tests/` directory with pytest unit tests for the writer/reader prefer-md5 path, mirror URL rotation, and CM CLI probe (mocked subprocess). `requirements-dev.txt` pins pytest.
+
 ## [0.5.0] — 2026-04-09
 
 The "actually merges into osu!lazer" release. Going from "downloads beatmaps" to "downloads beatmaps, generates `.osdb`, **and** writes them into your live `client.realm` non-destructively, then relaunches lazer for you" took most of a day of debugging .NET unhandled exceptions under wine, and it finally works end-to-end.

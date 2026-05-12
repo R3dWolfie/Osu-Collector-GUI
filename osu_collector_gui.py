@@ -59,7 +59,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 APP_AUTHOR = "Red"
 
 
