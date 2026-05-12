@@ -1008,7 +1008,7 @@ class DownloadJob:
     # Post-import housekeeping
     cleanup_after_import: bool = False       # delete <id> - <name>/ folders
     # Dedup
-    skip_already_imported: bool = False       # probe lazer + skip its sets
+    skip_already_imported: bool = True        # probe lazer + skip its sets
     # Tuning
     download_parallel: int = 4                # 1..32 — concurrent .osz fetches
 
@@ -1863,7 +1863,7 @@ class MainWindow(QMainWindow):
             "Skip beatmapsets already imported in osu!lazer"
         )
         self.skip_imported_cb.setChecked(
-            bool(self.settings.get("skip_already_imported", False))
+            bool(self.settings.get("skip_already_imported", True))
         )
         self.skip_imported_cb.setToolTip(
             "Before downloading, ask Collection Manager CLI which beatmaps\n"
