@@ -2563,6 +2563,8 @@ class MainWindow(QMainWindow):
             target_collection_name=target_name,
             restart_lazer_after=self.restart_lazer_cb.isChecked(),
             cleanup_after_import=self.cleanup_cb.isChecked(),
+            skip_already_imported=self.skip_imported_cb.isChecked(),
+            download_parallel=self.download_parallel_spin.value(),
         )
 
         self.thread = QThread()
