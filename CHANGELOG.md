@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] — 2026-05-12
+
+### Fixed
+
+- **Downloads now spread load across mirrors intelligently.** Previously every parallel download slot started by trying catboy.best, so if catboy was rate-limiting the user's IP all 10 slots would each pay a full TCP-connect timeout (~10s × 3 retries) before falling back. Now `BeatmapMirror` picks the least-busy alive mirror for each new download — when catboy is healthy and fast its active count drops to 0 immediately so it stays preferred; when catboy stalls or its connections pile up, load shifts to nerinyan / osu.direct / beatconnect automatically. No magic numbers, no UI controls, no user-visible behavior changes when mirrors are working normally.
+
 ## [0.6.1] — 2026-05-12
 
 ### Fixed
