@@ -213,17 +213,26 @@ class BeatmapMirror:
     """Downloads a single .osz from a mirror with retries + fallbacks."""
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
-                 fallbacks: Iterable[str] = FALLBACK_MIRRORS) -> None:
+                 fallbacks: Iterable[str] = FALLBACK_MIRRORS,
+                 round_robin: bool = True) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.urls = [primary, *fallbacks]
+        self.round_robin = round_robin
+
+    def _urls_for_set(self, set_id: int) -> list[str]:
+        """Return urls rotated so each set_id picks a different primary."""
+        if not self.round_robin or len(self.urls) <= 1:
+            return list(self.urls)
+        offset = set_id % len(self.urls)
+        return self.urls[offset:] + self.urls[:offset]
 
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure."""
         dest_dir.mkdir(parents=True, exist_ok=True)
         last_error: Exception | None = None
 
-        for base_url in self.urls:
+        for base_url in self._urls_for_set(beatmapset_id):
             url = f"{base_url}/{beatmapset_id}"
             for attempt in range(HTTP_RETRIES):
                 try:
