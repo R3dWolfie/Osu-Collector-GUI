@@ -1007,6 +1007,10 @@ class DownloadJob:
     restart_lazer_after: bool = False
     # Post-import housekeeping
     cleanup_after_import: bool = False       # delete <id> - <name>/ folders
+    # Dedup
+    skip_already_imported: bool = False       # probe lazer + skip its sets
+    # Tuning
+    download_parallel: int = 4                # 1..32 — concurrent .osz fetches
 
 
 class DownloadWorker(QObject):
