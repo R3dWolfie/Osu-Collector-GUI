@@ -236,12 +236,10 @@ class BeatmapMirror:
     _state_lock = __import__("threading").Lock()
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
-                 fallbacks: Iterable[str] = FALLBACK_MIRRORS,
-                 round_robin: bool = False) -> None:
+                 fallbacks: Iterable[str] = FALLBACK_MIRRORS) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.urls = [primary, *fallbacks]
-        self.round_robin = round_robin
 
     @classmethod
     def _is_dead(cls, url: str) -> bool:
@@ -316,18 +314,6 @@ class BeatmapMirror:
                 cls._active.pop(url, None)
             else:
                 cls._active[url] = n - 1
-
-    def _urls_for_set(self, set_id: int) -> list[str]:
-        """Return urls in order, with rotation if round_robin and skipping
-        currently-blacklisted mirrors. If ALL mirrors are blacklisted,
-        fall back to trying everything (the blacklist is just a hint)."""
-        if self.round_robin and len(self.urls) > 1:
-            offset = set_id % len(self.urls)
-            ordered = self.urls[offset:] + self.urls[:offset]
-        else:
-            ordered = list(self.urls)
-        alive = [u for u in ordered if not self._is_dead(u)]
-        return alive if alive else ordered
 
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure.

@@ -1,53 +1,25 @@
-"""Verify BeatmapMirror URL selection.
-
-Default is round_robin=False (fast: catboy primary, others on error).
-Pass round_robin=True to spread load across mirrors (politeness mode).
-"""
+"""Verify BeatmapMirror URL selection."""
 from osu_collector_gui import BeatmapMirror
 
 
-def test_round_robin_opt_in_rotates_by_set_id():
-    m = BeatmapMirror(
-        primary="https://a",
-        fallbacks=["https://b", "https://c"],
-        round_robin=True,
-    )
-    assert m._urls_for_set(0) == ["https://a", "https://b", "https://c"]
-    assert m._urls_for_set(1) == ["https://b", "https://c", "https://a"]
-    assert m._urls_for_set(2) == ["https://c", "https://a", "https://b"]
-    assert m._urls_for_set(3) == ["https://a", "https://b", "https://c"]
-
-
-def test_default_keeps_static_primary_first_order():
-    m = BeatmapMirror(primary="https://a", fallbacks=["https://b", "https://c"])
-    for sid in (0, 1, 7, 100):
-        assert m._urls_for_set(sid) == ["https://a", "https://b", "https://c"]
-
-
-def test_round_robin_with_single_mirror_is_no_op():
-    m = BeatmapMirror(primary="https://only", fallbacks=[], round_robin=True)
-    assert m._urls_for_set(0) == ["https://only"]
-    assert m._urls_for_set(99) == ["https://only"]
-
-
-def test_dead_mirror_is_filtered_out_of_urls_for_set():
-    BeatmapMirror.reset_state()
-    m = BeatmapMirror(primary="https://a", fallbacks=["https://b", "https://c"])
+def test_acquire_filters_dead_unless_only_option():
     BeatmapMirror._mark_dead("https://a")
-    assert m._urls_for_set(0) == ["https://b", "https://c"]
-    BeatmapMirror.reset_state()
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"], excluding=set()
+    )
+    # "a" is dead, so least-busy among alive {b, c} picks b (tie-break).
+    assert chosen == "https://b"
 
 
-def test_all_dead_mirrors_still_returns_full_list_as_fallback():
-    # If literally every mirror is blacklisted, we shouldn't refuse to
-    # try at all — return them all and let the request layer surface
-    # the failure naturally.
-    BeatmapMirror.reset_state()
-    m = BeatmapMirror(primary="https://a", fallbacks=["https://b"])
+def test_acquire_falls_back_to_dead_when_all_blacklisted():
+    # Every mirror is blacklisted. We shouldn't refuse to try — pick
+    # the primary anyway (the blacklist is a hint, not a hard block).
     BeatmapMirror._mark_dead("https://a")
     BeatmapMirror._mark_dead("https://b")
-    assert m._urls_for_set(0) == ["https://a", "https://b"]
-    BeatmapMirror.reset_state()
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b"], excluding=set()
+    )
+    assert chosen == "https://a"
 
 
 def test_acquire_picks_primary_on_cold_state():
