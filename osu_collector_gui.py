@@ -1348,6 +1348,14 @@ class DownloadWorker(QObject):
     # ---- lazer collection merge ------------------------------------------
 
     def _merge_into_lazer(self) -> None:
+        # Short-circuit if nothing was generated this run (e.g. all
+        # collections failed to fetch, or every set was skipped). Without
+        # this guard, the expensive snapshot+export through wine runs even
+        # when there's nothing to merge — looks like the GUI hangs.
+        if not self._generated_osdb_files:
+            self.log.emit("[lazer] no new collections generated this run — skipping merge")
+            return
+
         if not self.job.cm_cli_command:
             raise RuntimeError(
                 "Collection Manager CLI not configured. Set its path in "
