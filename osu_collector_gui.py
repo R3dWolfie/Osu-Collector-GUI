@@ -2828,7 +2828,7 @@ class MainWindow(QMainWindow):
                 )
                 return
             target_name = new_name
-        elif target_text and target_text != self.DEFAULT_TARGET:
+        elif target_text and target_text not in (self.DEFAULT_TARGET, target_combo_no_merge_label()):
             # Pulled from existing list — use userData when present
             # (the visible label has " (N maps)" appended).
             ud = self.target_combo.currentData()
@@ -2870,7 +2870,8 @@ class MainWindow(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.thread.start()
 
-        self.start_btn.setEnabled(False)
+        self.log_box.clear()
+        self.start_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
         self.status_label.setText("Starting…")
         self.progress_bar.setValue(0)
@@ -2959,7 +2960,8 @@ class MainWindow(QMainWindow):
             self.thread.wait()
         self.thread = None
         self.worker = None
-        self.start_btn.setEnabled(True)
+        self.start_btn.setVisible(True)
+        self._update_start_enabled()
         self.cancel_btn.setVisible(False)
 
     def _consolidate_osdb(self) -> None:
