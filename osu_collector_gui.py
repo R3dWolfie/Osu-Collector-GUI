@@ -47,7 +47,6 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -2045,8 +2044,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}")
         # Comfortable default that fits all the form rows without scrolling.
-        # The minimum is much smaller because the central widget is wrapped
-        # in a QScrollArea — users can shrink the window and scroll.
         self.resize(900, 950)
         self.setMinimumSize(520, 400)
 
@@ -2386,25 +2383,6 @@ class MainWindow(QMainWindow):
         self.advanced_container.setVisible(checked)
         self.advanced_expander.setText("▾ Advanced" if checked else "▸ Advanced")
 
-    def showEvent(self, event) -> None:    # noqa: N802 (Qt override)
-        super().showEvent(event)
-        # Qt's initial layout pass can underestimate the scroll area's
-        # content height when there are many nested QFormLayouts. Defer
-        # a recomputation to the next event-loop tick so it runs AFTER
-        # the layout has settled. Especially load-bearing on Windows
-        # where the initial configure-notify timing differs from Linux,
-        # producing the "have to resize the window to see everything"
-        # symptom users hit on first open.
-        if not getattr(self, "_initial_layout_done", False):
-            self._initial_layout_done = True
-            QTimer.singleShot(0, self._recompute_scroll_layout)
-
-    def _recompute_scroll_layout(self) -> None:
-        central = self.centralWidget()
-        if isinstance(central, QScrollArea) and central.widget() is not None:
-            central.widget().updateGeometry()
-            central.widget().adjustSize()
-
     def _on_browse(self) -> None:
         d = QFileDialog.getExistingDirectory(
             self, "Output folder", self.dir_edit.text()
@@ -2526,16 +2504,17 @@ class MainWindow(QMainWindow):
 
     # ----- target collection picker ---------------------------------------
 
-    DEFAULT_TARGET = "(default — one lazer collection per osu!collector collection)"
+    DEFAULT_TARGET = target_combo_default_label()
     NEW_TARGET = "+ Create new collection..."
     SEPARATOR = "──────────"
 
     def _reset_target_combo(self) -> None:
-        """Populate the target combo with just the default + 'Create new'."""
+        """Populate the target combo with just the default + 'Create new' + 'Don't merge'."""
         self.target_combo.blockSignals(True)
         self.target_combo.clear()
         self.target_combo.addItem(self.DEFAULT_TARGET)
         self.target_combo.addItem(self.NEW_TARGET)
+        self.target_combo.addItem(target_combo_no_merge_label())
         # Restore last-used selection if it still makes sense.
         saved = self.settings.get("target_collection", "")
         idx = self.target_combo.findText(saved) if saved else 0
@@ -2621,6 +2600,7 @@ class MainWindow(QMainWindow):
                 self.target_combo.addItem(label, userData=c.name)
         self.target_combo.insertSeparator(self.target_combo.count())
         self.target_combo.addItem(self.NEW_TARGET)
+        self.target_combo.addItem(target_combo_no_merge_label())
         # Try to restore previous selection
         idx = self.target_combo.findText(previous)
         self.target_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -2829,11 +2809,12 @@ class MainWindow(QMainWindow):
         # add_to_lazer_collections will be False in that case.
         cm_cli_cmd: list[str] | None = self._resolve_cm_cli()
 
-        # Determine whether to add maps to lazer collections: requires a
-        # target other than the default "one per collection" to be selected,
-        # or any target when CM CLI is configured (so the .osdb round-trip works).
         target_text = self.target_combo.currentText()
-        add_to_lazer = bool(cm_cli_cmd) and (target_text != self.DEFAULT_TARGET or cm_cli_cmd)
+        # add_to_lazer follows the picker: anything except the "Don't merge"
+        # sentinel means we want the realm round-trip. Empty string can occur
+        # mid-startup before the combo populates — treat that as merge-on too
+        # so we don't accidentally disable merging due to a race condition.
+        add_to_lazer = target_text != target_combo_no_merge_label()
 
         # Resolve the target collection choice into a single name override
         # (or None if the user wants the default per-collection naming).
