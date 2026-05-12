@@ -48,3 +48,58 @@ def test_all_dead_mirrors_still_returns_full_list_as_fallback():
     BeatmapMirror._mark_dead("https://b")
     assert m._urls_for_set(0) == ["https://a", "https://b"]
     BeatmapMirror.reset_state()
+
+
+def test_acquire_picks_primary_on_cold_state():
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"], excluding=set()
+    )
+    assert chosen == "https://a"
+    assert BeatmapMirror._active == {"https://a": 1}
+
+
+def test_acquire_breaks_ties_by_url_order():
+    BeatmapMirror._active["https://a"] = 1
+    BeatmapMirror._active["https://b"] = 1
+    BeatmapMirror._active["https://c"] = 1
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"], excluding=set()
+    )
+    assert chosen == "https://a"
+    assert BeatmapMirror._active["https://a"] == 2
+
+
+def test_acquire_picks_least_busy_when_not_tied():
+    BeatmapMirror._active["https://a"] = 3
+    BeatmapMirror._active["https://b"] = 1
+    BeatmapMirror._active["https://c"] = 2
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"], excluding=set()
+    )
+    assert chosen == "https://b"
+    assert BeatmapMirror._active["https://b"] == 2
+
+
+def test_acquire_excludes_listed_urls():
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"], excluding={"https://a"}
+    )
+    assert chosen == "https://b"
+
+
+def test_acquire_falls_back_to_dead_when_alive_set_is_empty():
+    # Only candidate "a" is in our list; mark it dead. Excluding nothing.
+    # Alive filter would return empty, so we fall back to allowing dead.
+    BeatmapMirror._mark_dead("https://a")
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a"], excluding=set()
+    )
+    assert chosen == "https://a"
+
+
+def test_acquire_returns_none_when_everything_excluded():
+    chosen = BeatmapMirror._acquire_least_busy(
+        ["https://a", "https://b", "https://c"],
+        excluding={"https://a", "https://b", "https://c"},
+    )
+    assert chosen is None

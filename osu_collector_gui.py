@@ -265,6 +265,47 @@ class BeatmapMirror:
             cls._dead_until.clear()
             cls._active.clear()
 
+    @classmethod
+    def _acquire_least_busy(cls, candidates: list[str],
+                           excluding: set[str]) -> str | None:
+        """Atomically pick the least-busy alive mirror among `candidates`
+        not in `excluding`, and increment its active count.
+
+        Tie-break by index in `candidates` so the declared primary
+        (typically catboy) wins on cold start and on equal counts.
+
+        Falls back to allowing dead mirrors when every alive candidate
+        is excluded — better to attempt and surface the failure than to
+        refuse to try at all.
+
+        Returns None only when every candidate is in `excluding`.
+        """
+        with cls._state_lock:
+            now = time.monotonic()
+            def _alive(u: str) -> bool:
+                until = cls._dead_until.get(u, 0.0)
+                if until <= now:
+                    if until:
+                        cls._dead_until.pop(u, None)
+                    return True
+                return False
+
+            available = [u for u in candidates
+                         if u not in excluding and _alive(u)]
+            if not available:
+                # Every alive candidate excluded — allow dead mirrors so
+                # the caller still gets to try.
+                available = [u for u in candidates if u not in excluding]
+            if not available:
+                return None
+
+            chosen = min(
+                available,
+                key=lambda u: (cls._active.get(u, 0), candidates.index(u)),
+            )
+            cls._active[chosen] = cls._active.get(chosen, 0) + 1
+            return chosen
+
     def _urls_for_set(self, set_id: int) -> list[str]:
         """Return urls in order, with rotation if round_robin and skipping
         currently-blacklisted mirrors. If ALL mirrors are blacklisted,
