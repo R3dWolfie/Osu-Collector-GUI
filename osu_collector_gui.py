@@ -2703,6 +2703,14 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    # Honor non-integer Windows DPI scaling (125%, 150%) precisely instead
+    # of rounding to the nearest integer factor — Qt 6's default Round
+    # policy is the root cause of 1-pixel-off widget heights that fool the
+    # QScrollArea's sizeHint() into underestimating content height on
+    # Windows. Must be set BEFORE constructing QApplication.
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
