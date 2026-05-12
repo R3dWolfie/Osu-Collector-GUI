@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] — 2026-05-12
+
+### Fixed
+
+- **"Have to resize the window to see content" on first open.** The QScrollArea wrapping the form would underestimate its content height during Qt's initial layout pass, leaving some sections invisible until the user manually resized the window. Now `MainWindow.showEvent` schedules a deferred `updateGeometry()` + `adjustSize()` on the scroll area's inner widget via `QTimer.singleShot(0, …)`, which runs after the layout has settled. Especially load-bearing on Windows where the configure-notify timing differs from Linux.
+- **Windows DPI scaling at 125% / 150%.** Qt 6's default `Round` rounding policy was snapping non-integer scaling factors to the nearest integer, producing 1-pixel-off widget heights that compounded across nested forms. Now uses `PassThrough` so Qt honors the OS's exact DPI factor. Set before `QApplication` is constructed, as required.
+- **Root scroll-content vertical size policy** changed from `Preferred` to `Minimum` so its `sizeHint()` reflects actual minimum content height (matters for some compositor configurations).
+
 ## [0.6.0] — 2026-05-12
 
 The "stop redownloading maps I already have" release. Huge osu!collector collections (e.g. 17391 with ~11k maps) now skip downloading any beatmapset where lazer already has at least one diff imported — but still compose the full collection in lazer.
