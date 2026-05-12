@@ -2010,6 +2010,31 @@ class DownloadWorker(QObject):
 
 
 # ---------------------------------------------------------------------------
+# UI helpers (pure functions, unit-testable without Qt)
+# ---------------------------------------------------------------------------
+
+def should_enable_start(collection_ids_text: str) -> bool:
+    """The Start button is enabled iff at least one non-whitespace character
+    appears in the collection-IDs field. The actual ID parsing happens at
+    submit time via _parse_ids."""
+    return bool(collection_ids_text.strip())
+
+
+def target_combo_default_label() -> str:
+    """The default sentinel item in the 'Add to' picker. Picking this
+    preserves v0.6.x's behavior: one lazer collection per osu!collector
+    collection, named after the collection."""
+    return "(one collection per osu!collector collection)"
+
+
+def target_combo_no_merge_label() -> str:
+    """The sentinel item that disables lazer collection merge entirely.
+    Files still download (and may still auto-import into lazer) but no
+    realm modification happens."""
+    return "Don't merge"
+
+
+# ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 
