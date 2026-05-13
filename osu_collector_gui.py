@@ -192,18 +192,10 @@ QSpinBox::up-button, QSpinBox::down-button {
     width: 14px;
     border: none;
 }
-QSpinBox::up-arrow {
-    image: none;
-    border-bottom: 4px solid #9aa0a6;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-}
-QSpinBox::down-arrow {
-    image: none;
-    border-top: 4px solid #9aa0a6;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-}
+/* Native QSpinBox arrow rendering — Qt's QSS doesn't fully support
+   CSS border-triangle tricks, and providing a width/height-bounded
+   image: none would render as horizontal lines on most platforms.
+   Leaving these unstyled means Qt draws its native up/down triangles. */
 
 QPushButton, QToolButton {
     background-color: #2a2a35;
@@ -2091,7 +2083,7 @@ class MainWindow(QMainWindow):
             "last_output_dir", str(Path.home() / "osu-collections")
         ))
         self.dir_browse_btn = QToolButton()
-        self.dir_browse_btn.setText("📁")
+        self.dir_browse_btn.setText("…")
         self.dir_browse_btn.clicked.connect(self._on_browse)
         out_row.addWidget(self.dir_edit)
         out_row.addWidget(self.dir_browse_btn)
@@ -2108,7 +2100,12 @@ class MainWindow(QMainWindow):
         addto_row.setSpacing(0)
         self.target_combo = QComboBox()
         self.target_combo.setEditable(False)
-        self.target_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # Don't auto-size to longest content — that makes the picker grow
+        # wider than the Output column and breaks the equal-stretch layout.
+        self.target_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.target_combo.setMinimumContentsLength(20)
         self._reset_target_combo()
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         self.refresh_collections_btn = QToolButton()
@@ -2248,7 +2245,7 @@ class MainWindow(QMainWindow):
             "lazer_realm_path", str(_default_lazer_realm_path())
         ))
         realm_browse = QToolButton()
-        realm_browse.setText("📁")
+        realm_browse.setText("…")
         realm_browse.clicked.connect(self._on_browse_realm)
         realm_row.addWidget(self.realm_edit)
         realm_row.addWidget(realm_browse)
@@ -2259,7 +2256,7 @@ class MainWindow(QMainWindow):
         self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
         self.osu_path_edit.setPlaceholderText("(auto-detect)")
         osu_browse = QToolButton()
-        osu_browse.setText("📁")
+        osu_browse.setText("…")
         osu_browse.clicked.connect(self._on_browse_osu)
         osu_row.addWidget(self.osu_path_edit)
         osu_row.addWidget(osu_browse)
