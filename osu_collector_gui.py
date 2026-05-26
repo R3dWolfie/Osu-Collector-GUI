@@ -950,6 +950,19 @@ class CmCliRunner:
                 "-s"]
         self._run(argv)
 
+    def convert_osdb_to_db(self, src_osdb: Path, dest_db: Path) -> None:
+        """Convert an .osdb to osu! stable's native collection.db format.
+
+        Same `cm convert` command as the others — output format is inferred
+        from the .db extension on -o. The .db output is accepted by
+        osu!collector.com, osu! stable, and osu!lazer.
+        """
+        argv = [*self.cfg.command, "convert",
+                "-i", str(src_osdb),
+                "-o", str(dest_db),
+                "-s"]
+        self._run(argv)
+
     def probe_imported_beatmaps(self, realm_path: Path,
                                 beatmap_ids: list[int]) -> ProbeResult:
         """Ask CM CLI which of `beatmap_ids` lazer's BeatmapInfo DB knows.
@@ -2146,16 +2159,33 @@ class MainWindow(QMainWindow):
         root.addLayout(spin_row)
 
         # --- Start / Cancel buttons (Start visible by default, Cancel hidden) ---
+        # Start / Cancel share the same stretchable slot — Cancel replaces
+        # Start during a run. Export sits to the right at a fixed width.
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
+
         self.start_btn = QPushButton("⬇  Start download")
         self.start_btn.setObjectName("primaryBtn")
         self.start_btn.clicked.connect(self._on_start)
         self.start_btn.setEnabled(False)  # enabled when ids_edit has content
-        root.addWidget(self.start_btn)
+        action_row.addWidget(self.start_btn, stretch=1)
 
         self.cancel_btn = QPushButton("✕  Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.cancel_btn.setVisible(False)
-        root.addWidget(self.cancel_btn)
+        action_row.addWidget(self.cancel_btn, stretch=1)
+
+        self.export_btn = QPushButton("Export to .db…")
+        self.export_btn.setToolTip(
+            "Export the collection currently selected in the 'Add to' picker\n"
+            "to osu! stable's native collection.db format (accepted by\n"
+            "osu!collector.com, stable, and lazer). Requires CM CLI + a real\n"
+            "lazer collection picked (not a 'Don't merge' or default sentinel)."
+        )
+        self.export_btn.clicked.connect(self._on_export_collection)
+        action_row.addWidget(self.export_btn)
+
+        root.addLayout(action_row)
 
         # --- Status line ---
         self.status_label = QLabel("Ready")
@@ -2378,6 +2408,99 @@ class MainWindow(QMainWindow):
         hint = self.sizeHint()
         if hint.height() > self.height():
             self.resize(self.width(), hint.height())
+
+    def _on_export_collection(self) -> None:
+        """Export the picker-selected lazer collection to a single .db file."""
+        target_text = self.target_combo.currentText().strip()
+        sentinels = {
+            self.DEFAULT_TARGET,
+            self.NEW_TARGET,
+            target_combo_no_merge_label(),
+        }
+        if not target_text or target_text in sentinels:
+            self.status_label.setText(
+                "Export: pick a real collection from 'Add to' first "
+                "(click Refresh to load your lazer collections)."
+            )
+            return
+
+        cm_cli_cmd = self._resolve_cm_cli()
+        if not cm_cli_cmd:
+            self.status_label.setText(
+                "Export: Collection Manager CLI not configured "
+                "(set its path in Advanced → Paths)."
+            )
+            return
+
+        realm_path = Path(self.realm_edit.text().strip()).expanduser()
+        if not realm_path.exists():
+            self.status_label.setText(
+                f"Export: client.realm not found at {realm_path}"
+            )
+            return
+
+        # Suggest <CollectionName>.db in Downloads as the default save path.
+        default_dir = Path.home() / "Downloads"
+        default_name = _safe_filename(target_text) + ".db"
+        dest_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export collection to .db",
+            str(default_dir / default_name),
+            "osu! collection database (*.db)",
+        )
+        if not dest_str:
+            return
+        dest_path = Path(dest_str)
+        if dest_path.suffix.lower() != ".db":
+            dest_path = dest_path.with_suffix(".db")
+
+        self.status_label.setText(f"Exporting '{target_text}' to .db…")
+        self.export_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        try:
+            self._do_export_collection(target_text, realm_path, dest_path, cm_cli_cmd)
+            self.status_label.setText(f"Exported '{target_text}' to {dest_path}")
+        except Exception as e:
+            self.status_label.setText(f"Export failed: {e}")
+        finally:
+            self.export_btn.setEnabled(True)
+
+    def _do_export_collection(self, collection_name: str, realm_path: Path,
+                              dest_path: Path, cm_cli_cmd: list[str]) -> None:
+        """Workhorse for _on_export_collection. Raises on failure."""
+        cm = CmCliRunner(CmCliConfig(command=list(cm_cli_cmd), osu_location=None))
+        tmp_dir = realm_path.parent / ".oc-gui-tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        snapshot_realm = tmp_dir / "export-snapshot.realm"
+        all_osdb = tmp_dir / "export-all.osdb"
+        single_osdb = tmp_dir / "export-single.osdb"
+
+        try:
+            # Snapshot so lazer can stay open during export.
+            shutil.copy2(realm_path, snapshot_realm)
+            cm.export_realm_to_osdb(snapshot_realm, all_osdb)
+
+            collections = OsdbReader.read(all_osdb)
+            match = next(
+                (c for c in collections if c.name.strip() == collection_name.strip()),
+                None,
+            )
+            if match is None:
+                raise RuntimeError(
+                    f"Collection '{collection_name}' not found in your lazer "
+                    f"realm. Click Refresh in 'Add to' to update the list."
+                )
+
+            # Write a single-collection .osdb, then convert that to .db.
+            OsdbWriter.write(single_osdb, match)
+            cm.convert_osdb_to_db(single_osdb, dest_path)
+        finally:
+            for p in (snapshot_realm, all_osdb, single_osdb):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _on_browse(self) -> None:
         d = QFileDialog.getExistingDirectory(
