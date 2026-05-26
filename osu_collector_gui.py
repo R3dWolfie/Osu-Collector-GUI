@@ -2367,6 +2367,17 @@ class MainWindow(QMainWindow):
     def _on_advanced_toggled(self, checked: bool) -> None:
         self.advanced_container.setVisible(checked)
         self.advanced_expander.setText("▾ Advanced" if checked else "▸ Advanced")
+        # Grow the window when Advanced opens so its rows aren't squished
+        # below their sizeHint. Defer one event-loop tick so Qt has finished
+        # re-laying out the container before we measure its preferred size.
+        # On collapse we DON'T shrink — preserves any user resize they did.
+        if checked:
+            QTimer.singleShot(0, self._grow_window_for_advanced)
+
+    def _grow_window_for_advanced(self) -> None:
+        hint = self.sizeHint()
+        if hint.height() > self.height():
+            self.resize(self.width(), hint.height())
 
     def _on_browse(self) -> None:
         d = QFileDialog.getExistingDirectory(
