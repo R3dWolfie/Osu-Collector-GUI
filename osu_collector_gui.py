@@ -168,17 +168,11 @@ QLineEdit::placeholder, QPlainTextEdit::placeholder {
     color: #5d6072;
 }
 
-QComboBox::drop-down {
-    border: none;
-    width: 18px;
-}
-QComboBox::down-arrow {
-    image: none;
-    border-top: 4px solid #9aa0a6;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    margin-right: 6px;
-}
+/* Combo dropdown menu items get themed; the down-arrow and the
+   drop-down container button keep Qt's native rendering — every
+   attempt to style them via QSS (image:none + border-triangle,
+   url() with a bundled svg, etc.) renders inconsistently across
+   Linux/Windows/macOS. Native arrows are unmistakably visible. */
 QComboBox QAbstractItemView {
     background-color: #2a2a35;
     border: 1px solid #3a3a48;
@@ -187,15 +181,9 @@ QComboBox QAbstractItemView {
     selection-color: white;
 }
 
-QSpinBox::up-button, QSpinBox::down-button {
-    background: transparent;
-    width: 14px;
-    border: none;
-}
-/* Native QSpinBox arrow rendering — Qt's QSS doesn't fully support
-   CSS border-triangle tricks, and providing a width/height-bounded
-   image: none would render as horizontal lines on most platforms.
-   Leaving these unstyled means Qt draws its native up/down triangles. */
+/* QSpinBox up/down buttons + arrows: keep Qt's native rendering for
+   the same reason — bordered/imageless QSS sub-controls render as
+   blank or as horizontal lines depending on platform. */
 
 QPushButton, QToolButton {
     background-color: #2a2a35;
