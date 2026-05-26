@@ -216,18 +216,10 @@ QCheckBox {
     spacing: 6px;
     font-size: 12px;
 }
-QCheckBox::indicator {
-    width: 13px;
-    height: 13px;
-    border: 1.5px solid #5d6072;
-    border-radius: 2px;
-    background: #1e1e26;
-}
-QCheckBox::indicator:checked {
-    background: #e3344f;
-    border-color: #e3344f;
-    image: none;
-}
+/* QCheckBox::indicator left to Qt's native rendering — overriding with
+   QSS + image: none renders as a flat colored square with no checkmark
+   on most platforms. Native indicators are theme-colored but always
+   show a visible checkmark glyph. */
 
 QProgressBar {
     background-color: #2a2a35;
@@ -2411,18 +2403,17 @@ class MainWindow(QMainWindow):
 
     def _on_export_collection(self) -> None:
         """Export the picker-selected lazer collection to a single .db file."""
-        target_text = self.target_combo.currentText().strip()
-        sentinels = {
-            self.DEFAULT_TARGET,
-            self.NEW_TARGET,
-            target_combo_no_merge_label(),
-        }
-        if not target_text or target_text in sentinels:
+        # currentData() holds the bare collection name set as userData when
+        # _on_refresh_collections populated the combo. currentText() would
+        # include the " (N maps)" display suffix and never match the realm.
+        target_name = self.target_combo.currentData()
+        if not target_name:
             self.status_label.setText(
                 "Export: pick a real collection from 'Add to' first "
                 "(click Refresh to load your lazer collections)."
             )
             return
+        target_name = str(target_name).strip()
 
         cm_cli_cmd = self._resolve_cm_cli()
         if not cm_cli_cmd:
@@ -2441,7 +2432,7 @@ class MainWindow(QMainWindow):
 
         # Suggest <CollectionName>.db in Downloads as the default save path.
         default_dir = Path.home() / "Downloads"
-        default_name = _safe_filename(target_text) + ".db"
+        default_name = _safe_filename(target_name) + ".db"
         dest_str, _ = QFileDialog.getSaveFileName(
             self,
             "Export collection to .db",
@@ -2454,13 +2445,13 @@ class MainWindow(QMainWindow):
         if dest_path.suffix.lower() != ".db":
             dest_path = dest_path.with_suffix(".db")
 
-        self.status_label.setText(f"Exporting '{target_text}' to .db…")
+        self.status_label.setText(f"Exporting '{target_name}' to .db…")
         self.export_btn.setEnabled(False)
         QApplication.processEvents()
 
         try:
-            self._do_export_collection(target_text, realm_path, dest_path, cm_cli_cmd)
-            self.status_label.setText(f"Exported '{target_text}' to {dest_path}")
+            self._do_export_collection(target_name, realm_path, dest_path, cm_cli_cmd)
+            self.status_label.setText(f"Exported '{target_name}' to {dest_path}")
         except Exception as e:
             self.status_label.setText(f"Export failed: {e}")
         finally:
