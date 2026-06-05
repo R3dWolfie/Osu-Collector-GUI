@@ -63,7 +63,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 APP_AUTHOR = "Red"
 
 
@@ -420,6 +420,31 @@ class OsuCollectorClient:
 # Beatmap mirror downloader
 # ---------------------------------------------------------------------------
 
+def _parse_retry_after(value: str | None, cap: float = 600.0) -> float | None:
+    """Parse an HTTP Retry-After header into a delay in seconds.
+
+    Accepts either a delta-seconds integer ("120") or an HTTP-date. Returns
+    None when absent/unparseable so the caller can fall back to its default.
+    Capped so a misbehaving mirror can't blacklist itself for hours.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return min(float(value), cap)
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(value)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = (dt - datetime.now(timezone.utc)).total_seconds()
+        return min(max(delta, 0.0), cap) if delta > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 class BeatmapMirror:
     """Downloads a single .osz from a mirror with retries + fallbacks.
 
@@ -434,17 +459,40 @@ class BeatmapMirror:
     # Class-level shared state, all guarded by _state_lock:
     #   _dead_until: {url -> monotonic time the blacklist expires}
     #   _active:     {url -> current concurrent-download count}
+    #   _rr_index:   monotonically increasing round-robin cursor; each
+    #                download starts at the next mirror so load spreads
+    #                evenly (1->2->3->4->1...) even at low parallelism,
+    #                instead of every download hammering the primary.
     # The lock is held ONLY during pick + increment/decrement. HTTP
     # I/O never runs under the lock.
     _dead_until: dict[str, float] = {}
     _active: dict[str, int] = {}
+    _rr_index: int = 0
     _state_lock = __import__("threading").Lock()
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
-                 fallbacks: Iterable[str] = FALLBACK_MIRRORS) -> None:
+                 fallbacks: Iterable[str] = FALLBACK_MIRRORS,
+                 pool_maxsize: int = 32) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
+        # Size the connection pool to the max parallelism so high worker
+        # counts get real concurrency. The stock Session pools only 10
+        # connections per host, so >10 parallel downloads to one mirror
+        # would queue (or churn connections) — a hidden serialization.
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=8, pool_maxsize=pool_maxsize,
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.urls = [primary, *fallbacks]
+
+    @classmethod
+    def _next_start(cls) -> int:
+        """Return the next round-robin offset into the mirror list."""
+        with cls._state_lock:
+            i = cls._rr_index
+            cls._rr_index += 1
+            return i
 
     @classmethod
     def _is_dead(cls, url: str) -> bool:
@@ -457,9 +505,13 @@ class BeatmapMirror:
             return False
 
     @classmethod
-    def _mark_dead(cls, url: str) -> None:
+    def _mark_dead(cls, url: str, seconds: float = MIRROR_DEAD_TTL_S) -> None:
+        """Blacklist a mirror for `seconds` (process-wide, so every parallel
+        slot skips it). Never shortens an existing, longer blacklist."""
         with cls._state_lock:
-            cls._dead_until[url] = time.monotonic() + MIRROR_DEAD_TTL_S
+            until = time.monotonic() + max(1.0, seconds)
+            if until > cls._dead_until.get(url, 0.0):
+                cls._dead_until[url] = until
 
     @classmethod
     def reset_state(cls) -> None:
@@ -467,6 +519,7 @@ class BeatmapMirror:
         with cls._state_lock:
             cls._dead_until.clear()
             cls._active.clear()
+            cls._rr_index = 0
 
     @classmethod
     def _acquire_least_busy(cls, candidates: list[str],
@@ -523,19 +576,27 @@ class BeatmapMirror:
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure.
 
-        Uses least-busy mirror selection: each iteration picks the mirror
-        with fewest active connections (excluding ones we've already
-        tried this download), increments its active count for the
-        duration of the request, then decrements on exit. Mirrors that
-        fail at the TCP-connect layer get blacklisted process-wide so
-        other parallel slots skip them.
+        Mirror selection combines round-robin with least-busy fallback:
+        each download starts at the next mirror in rotation (so successive
+        downloads hit mirror 1, 2, 3, 4, 1, … and no single mirror takes
+        all the load — minimising rate-limiting), then within that rotated
+        order picks the least-busy alive mirror, skipping any blacklisted
+        by a prior 404-elsewhere / timeout / 429. Active counts and the
+        dead-list are shared process-wide across all parallel download
+        slots.
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
         last_error: Exception | None = None
         tried: set[str] = set()
 
+        # Rotate the mirror list so this download prefers the next mirror in
+        # sequence. _acquire_least_busy tie-breaks by position in this list,
+        # so the rotated primary wins on a cold/idle tie.
+        start = self._next_start() % len(self.urls)
+        ordered = self.urls[start:] + self.urls[:start]
+
         while True:
-            base_url = self._acquire_least_busy(self.urls, excluding=tried)
+            base_url = self._acquire_least_busy(ordered, excluding=tried)
             if base_url is None:
                 break
             try:
@@ -554,6 +615,21 @@ class BeatmapMirror:
                                 # giving up (the old code returned None here,
                                 # which is why ~half a collection could show
                                 # up as "not on mirror").
+                                break
+                            if r.status_code in (429, 403):
+                                # Rate-limited / temporarily blocked. Do NOT
+                                # retry this mirror — that just deepens the
+                                # limit. Blacklist it (honouring Retry-After)
+                                # so every parallel slot backs off it, and
+                                # fall through to the other mirrors.
+                                cooldown = _parse_retry_after(
+                                    r.headers.get("Retry-After")
+                                ) or MIRROR_DEAD_TTL_S
+                                self._mark_dead(base_url, cooldown)
+                                last_error = requests.HTTPError(
+                                    f"{r.status_code} rate-limited by {base_url} "
+                                    f"(cooling down {int(cooldown)}s)"
+                                )
                                 break
                             r.raise_for_status()
 

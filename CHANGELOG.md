@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] — 2026-06-06
+
+The "stop getting rate-limited" release — mirror handling reworked so load
+spreads evenly and a throttled mirror is backed off instead of hammered.
+
+### Added
+
+- **Round-robin mirror rotation.** Each download now starts at the next
+  mirror in sequence (catboy → nerinyan → osu.direct → beatconnect → …) so
+  no single mirror takes all the requests — even at low parallelism. Within
+  the rotated order it still picks the least-busy alive mirror and skips any
+  that are blacklisted.
+
+### Fixed
+
+- **Rate-limited mirrors are now respected, not retried.** A 429 (or 403)
+  used to fall into the generic retry path and hit the *same* throttled
+  mirror up to 3× with backoff — deepening the rate-limit. It now blacklists
+  that mirror process-wide (honouring the `Retry-After` header, capped at
+  10 min) so every parallel slot backs off it, and falls straight through to
+  the other mirrors.
+- **High parallel-download counts were silently throttled.** The shared
+  `requests.Session` pooled only 10 connections per host, so >10 parallel
+  downloads to one mirror queued instead of running concurrently. The pool is
+  now sized to the parallelism cap (32). Verified: 48 mock downloads run at a
+  measured peak concurrency equal to the worker count (1→1, 8→8, 32→32),
+  scaling wall-time linearly.
+
+### Tests
+
+- `tests/test_rate_limit.py`, `tests/test_round_robin.py` — 429 blacklist +
+  fallthrough, `Retry-After` parsing, round-robin rotation across mirrors.
+
 ## [0.8.0] — 2026-06-06
 
 The "UI overhaul" release — a from-scratch rebuild of the window layout and
