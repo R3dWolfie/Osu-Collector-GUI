@@ -31,15 +31,18 @@ from typing import Iterable
 
 import requests
 from PyQt6.QtCore import QObject, QThread, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QScrollArea,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -60,7 +63,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.8.0"
 APP_AUTHOR = "Red"
 
 
@@ -121,158 +124,195 @@ CM_CLI_RELEASE_URL = (
 #   text:             #e8e8ec primary / #9aa0a6 muted / #7d8090 meta
 #   semantic:         #5dd56e success (skipped) / #e3344f errors
 
+# Sizing uses pt (not px) for fonts so text stays a consistent *physical*
+# size across 1080p and 4K — the root cause of the old "doesn't scale"
+# complaint was px fonts that rendered tiny on high-DPI displays. Paddings
+# and radii stay in px; Qt scales those by the device pixel ratio under the
+# PassThrough rounding policy set in main().
 QSS = """
-QMainWindow, QWidget {
-    background-color: #1e1e26;
-    color: #e8e8ec;
-    font-family: -apple-system, "Segoe UI", "Cantarell", sans-serif;
-    font-size: 13px;
+QWidget {
+    background-color: #131419;
+    color: #e9eaf0;
+    font-family: "Segoe UI", "SF Pro Text", -apple-system, "Cantarell",
+                 "Noto Sans", sans-serif;
+    font-size: 10pt;
 }
 
-QLabel {
-    color: #e8e8ec;
-}
-QLabel[role="micro"] {
-    color: #7d8090;
-    font-size: 9px;
-    font-weight: 600;
+QLabel { background: transparent; color: #e9eaf0; }
+QLabel#appTitle { font-size: 16pt; font-weight: 800; color: #ffffff; }
+QLabel#appSubtitle { font-size: 9pt; color: #6f7388; }
+QLabel[role="field"] {
+    color: #8b8fa3;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.7px;
     text-transform: uppercase;
-    letter-spacing: 0.6px;
 }
-QLabel[role="subgroup"] {
-    color: #7d8090;
-    font-size: 9px;
-    font-weight: 600;
+QLabel[role="section"] {
+    color: #e3344f;
+    font-size: 8.5pt;
+    font-weight: 800;
+    letter-spacing: 0.8px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 8px;
 }
-QLabel[role="status"] {
-    color: #7d8090;
-    font-size: 11px;
+QLabel[role="status"] { color: #8b8fa3; font-size: 9pt; }
+
+/* Cards — the main grouping surface. Children paint transparent so the
+   card colour shows through (the global QWidget rule would otherwise tile
+   the window colour over every sub-widget). */
+QFrame#card {
+    background-color: #1b1c25;
+    border: 1px solid #282a38;
+    border-radius: 12px;
 }
+QFrame#card > QLabel,
+QFrame#card > QWidget > QLabel { background: transparent; }
 
 QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {
-    background-color: #2a2a35;
-    border: 1px solid #3a3a48;
-    border-radius: 4px;
-    padding: 6px 9px;
-    color: #e8e8ec;
+    background-color: #23252f;
+    border: 1px solid #323545;
+    border-radius: 8px;
+    padding: 8px 11px;
+    color: #e9eaf0;
     selection-background-color: #e3344f;
     selection-color: white;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {
-    border-color: #5a5a68;
+    border-color: #e3344f;
 }
-QLineEdit::placeholder, QPlainTextEdit::placeholder {
-    color: #5d6072;
-}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #3e4255; }
+QLineEdit::placeholder, QPlainTextEdit::placeholder { color: #5a5e72; }
 
-/* Combo dropdown menu items get themed; the down-arrow and the
-   drop-down container button keep Qt's native rendering — every
-   attempt to style them via QSS (image:none + border-triangle,
-   url() with a bundled svg, etc.) renders inconsistently across
-   Linux/Windows/macOS. Native arrows are unmistakably visible. */
+/* Combo popup themed; the down-arrow + spinbox arrows keep Qt's native
+   rendering — every QSS override of those sub-controls renders blank or
+   inconsistent across Linux/Windows/macOS. */
 QComboBox QAbstractItemView {
-    background-color: #2a2a35;
-    border: 1px solid #3a3a48;
-    color: #e8e8ec;
+    background-color: #23252f;
+    border: 1px solid #323545;
+    border-radius: 8px;
+    color: #e9eaf0;
+    padding: 4px;
     selection-background-color: #e3344f;
     selection-color: white;
+    outline: none;
 }
-
-/* QSpinBox up/down buttons + arrows: keep Qt's native rendering for
-   the same reason — bordered/imageless QSS sub-controls render as
-   blank or as horizontal lines depending on platform. */
 
 QPushButton, QToolButton {
-    background-color: #2a2a35;
-    border: 1px solid #3a3a48;
-    border-radius: 4px;
-    padding: 7px 14px;
-    color: #e8e8ec;
-    font-weight: 500;
+    background-color: #262835;
+    border: 1px solid #343748;
+    border-radius: 8px;
+    padding: 9px 16px;
+    color: #e9eaf0;
+    font-weight: 600;
 }
 QPushButton:hover, QToolButton:hover {
-    border-color: #5a5a68;
-    background-color: #32323e;
+    background-color: #2e3140;
+    border-color: #464a60;
 }
+QPushButton:pressed, QToolButton:pressed { background-color: #202230; }
 QPushButton:disabled, QToolButton:disabled {
-    color: #5d6072;
-    background-color: #25252e;
+    color: #565a6e;
+    background-color: #1c1d27;
+    border-color: #282a38;
 }
+
+/* Primary call-to-action — the cherry-red brand gradient. */
 QPushButton#primaryBtn {
-    background-color: #e3344f;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #e3344f, stop:1 #ff6a47);
     border: none;
     color: white;
-    font-weight: 600;
-    padding: 9px 18px;
+    font-size: 10.5pt;
+    font-weight: 800;
+    padding: 12px 22px;
+    border-radius: 9px;
 }
-QPushButton#primaryBtn:hover { background-color: #c92d44; }
-QPushButton#primaryBtn:disabled { background-color: #4a2932; color: #8a6878; }
+QPushButton#primaryBtn:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #ec4258, stop:1 #ff7a56);
+}
+QPushButton#primaryBtn:pressed {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #c92d44, stop:1 #e85b3e);
+}
+QPushButton#primaryBtn:disabled {
+    background-color: #3a2730; color: #8a6f78;
+}
+
+/* Cancel / destructive secondary. */
+QPushButton#dangerBtn {
+    background-color: transparent;
+    border: 1px solid #5e3640;
+    color: #ff8ba0;
+    font-weight: 700;
+    padding: 12px 22px;
+}
+QPushButton#dangerBtn:hover { background-color: #2a1a20; border-color: #7a4450; }
+
+/* Square-ish icon buttons (browse "…", refresh). */
+QToolButton#iconBtn {
+    padding: 8px 10px;
+    min-width: 18px;
+    font-weight: 700;
+    color: #b8bccd;
+}
 
 QCheckBox {
-    color: #c0c4d0;
-    spacing: 6px;
-    font-size: 12px;
+    background: transparent;
+    color: #c7cbd9;
+    spacing: 9px;
+    font-size: 9.5pt;
+    padding: 3px 0;
 }
-/* QCheckBox::indicator left to Qt's native rendering — overriding with
-   QSS + image: none renders as a flat colored square with no checkmark
-   on most platforms. Native indicators are theme-colored but always
-   show a visible checkmark glyph. */
+/* QCheckBox::indicator kept native — QSS overrides drop the checkmark
+   glyph on most platforms. */
 
 QProgressBar {
-    background-color: #2a2a35;
+    background-color: #23252f;
     border: none;
-    border-radius: 3px;
-    height: 6px;
+    border-radius: 5px;
+    min-height: 9px;
+    max-height: 9px;
     text-align: center;
     color: transparent;
 }
 QProgressBar::chunk {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                       stop:0 #e3344f, stop:1 #ffa15f);
-    border-radius: 3px;
+                                      stop:0 #e3344f, stop:1 #ffa15f);
+    border-radius: 5px;
 }
 
 QPlainTextEdit#logBox {
-    background-color: #0e0e14;
-    border: 1px solid #2a2a35;
-    border-radius: 3px;
-    padding: 8px 10px;
-    color: #9aa0a6;
-    font-family: "SF Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
-    font-size: 11px;
+    background-color: #0c0d12;
+    border: 1px solid #23252f;
+    border-radius: 9px;
+    padding: 10px 12px;
+    color: #98a0b8;
+    font-family: "Cascadia Code", "SF Mono", "Consolas",
+                 "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
 }
 
 QToolButton#advancedExpander {
     background: transparent;
-    border: 1px solid #2a2a35;
-    color: #7d8090;
-    font-size: 11px;
-    padding: 7px 9px;
+    border: 1px solid #282a38;
+    border-radius: 8px;
+    color: #8b8fa3;
+    font-size: 9.5pt;
+    font-weight: 600;
+    padding: 9px 12px;
     text-align: left;
 }
-QToolButton#advancedExpander:hover {
-    color: #e8e8ec;
-    border-color: #3a3a48;
-}
-QToolButton#advancedExpander:checked {
-    color: #e8e8ec;
-}
+QToolButton#advancedExpander:hover { color: #e9eaf0; border-color: #343748; }
+QToolButton#advancedExpander:checked { color: #e9eaf0; }
 
-QScrollBar:vertical {
-    background: transparent;
-    width: 8px;
-    margin: 0;
-}
+QScrollBar:vertical { background: transparent; width: 9px; margin: 0; }
 QScrollBar::handle:vertical {
-    background: #3a3a48;
-    border-radius: 4px;
-    min-height: 20px;
+    background: #343748; border-radius: 4px; min-height: 24px;
 }
-QScrollBar::handle:vertical:hover { background: #4a4a58; }
+QScrollBar::handle:vertical:hover { background: #464a60; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 """
 
 # ---------------------------------------------------------------------------
@@ -507,8 +547,14 @@ class BeatmapMirror:
                                                        DOWNLOAD_TIMEOUT_S),
                                               allow_redirects=True) as r:
                             if r.status_code == 404:
-                                # Beatmap genuinely missing — no point retrying.
-                                return None
+                                # This mirror doesn't have the set — but
+                                # coverage differs per mirror, so a 404 here
+                                # does NOT mean the map is gone everywhere.
+                                # Fall through to the next mirror instead of
+                                # giving up (the old code returned None here,
+                                # which is why ~half a collection could show
+                                # up as "not on mirror").
+                                break
                             r.raise_for_status()
 
                             filename = self._filename_from_response(r, beatmapset_id)
@@ -2056,9 +2102,10 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}")
-        # Comfortable default that fits all the form rows without scrolling.
-        self.resize(520, 680)
-        self.setMinimumSize(480, 500)
+        # Roomy default; the layout is fully resizable — the log card soaks
+        # up any extra vertical space so there's never dead air or squish.
+        self.resize(780, 760)
+        self.setMinimumSize(560, 600)
 
         self.thread: QThread | None = None
         self.worker: DownloadWorker | None = None
@@ -2069,251 +2116,304 @@ class MainWindow(QMainWindow):
     # ----- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        # Single-page progressive disclosure. No QScrollArea — the layout
-        # fits in a 520x680 window. Advanced section is collapsible.
+        # Single resizable page. The download inputs sit in a card up top;
+        # the log card at the bottom carries the vertical stretch so the
+        # window resizes cleanly with no dead space and no squish. Advanced
+        # is an inline collapsible card — opening it borrows space from the
+        # log rather than forcing the window to grow.
+
+        # Everything lives inside a scroll area: when the window is tall
+        # enough the log card stretches to fill it; when it's too short
+        # (e.g. Advanced open on a small window) the page scrolls instead of
+        # squishing widgets on top of each other.
+        scroll = QScrollArea()
+        scroll.setObjectName("rootScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setCentralWidget(scroll)
 
         central = QWidget()
-        self.setCentralWidget(central)
+        scroll.setWidget(central)
+        self._scroll_content = central
         root = QVBoxLayout(central)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(12)
 
-        # --- Collection IDs ---
-        ids_label = QLabel("Collection IDs")
-        ids_label.setProperty("role", "micro")
-        root.addWidget(ids_label)
+        # --- Header ---
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("osu!collector")
+        title.setObjectName("appTitle")
+        subtitle = QLabel(f"downloader · v{APP_VERSION}")
+        subtitle.setObjectName("appSubtitle")
+        header.addWidget(title)
+        header.addWidget(subtitle, alignment=Qt.AlignmentFlag.AlignBottom)
+        header.addStretch(1)
+        root.addLayout(header)
+
+        # --- Download card ---
+        card = self._make_card()
+        cv = card.layout()
+
+        cv.addWidget(self._field_label("Collection IDs or URLs"))
         self.ids_edit = QPlainTextEdit()
-        self.ids_edit.setPlaceholderText("paste osu!collector IDs…  (comma or whitespace separated)")
-        self.ids_edit.setMaximumHeight(60)
+        self.ids_edit.setPlaceholderText(
+            "Paste osu!collector IDs or links — one per line, "
+            "or comma / space separated"
+        )
+        self.ids_edit.setMinimumHeight(56)
+        self.ids_edit.setMaximumHeight(84)
         self.ids_edit.textChanged.connect(self._update_start_enabled)
-        root.addWidget(self.ids_edit)
+        cv.addWidget(self.ids_edit)
 
-        # --- Output folder + Add to picker (two columns) ---
-        two_col = QHBoxLayout()
-        two_col.setSpacing(6)
-
-        # Left col: Output folder
-        out_col = QVBoxLayout()
-        out_col.setSpacing(4)
-        out_label = QLabel("Output")
-        out_label.setProperty("role", "micro")
-        out_col.addWidget(out_label)
-        out_row = QHBoxLayout()
-        out_row.setSpacing(0)
+        # Output folder
+        cv.addWidget(self._field_label("Output folder"))
         self.dir_edit = QLineEdit(self.settings.get(
             "last_output_dir", str(Path.home() / "osu-collections")
         ))
-        self.dir_browse_btn = QToolButton()
-        self.dir_browse_btn.setText("…")
-        self.dir_browse_btn.clicked.connect(self._on_browse)
-        out_row.addWidget(self.dir_edit)
-        out_row.addWidget(self.dir_browse_btn)
-        out_col.addLayout(out_row)
-        two_col.addLayout(out_col, stretch=1)
+        self.dir_browse_btn = self._icon_button("…", self._on_browse,
+                                                "Choose output folder")
+        cv.addLayout(self._input_row(self.dir_edit, self.dir_browse_btn))
 
-        # Right col: Add-to picker with Refresh
-        addto_col = QVBoxLayout()
-        addto_col.setSpacing(4)
-        addto_label = QLabel("Add to")
-        addto_label.setProperty("role", "micro")
-        addto_col.addWidget(addto_label)
-        addto_row = QHBoxLayout()
-        addto_row.setSpacing(0)
+        # Add-to picker + refresh
+        cv.addWidget(self._field_label("Add maps to osu!lazer collection"))
         self.target_combo = QComboBox()
         self.target_combo.setEditable(False)
-        # Don't auto-size to longest content — that makes the picker grow
-        # wider than the Output column and breaks the equal-stretch layout.
+        # Don't auto-grow to the longest collection name — clamp the width
+        # so a long name can't blow out the layout.
         self.target_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self.target_combo.setMinimumContentsLength(20)
+        self.target_combo.setMinimumContentsLength(18)
         self._reset_target_combo()
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
-        self.refresh_collections_btn = QToolButton()
-        self.refresh_collections_btn.setText("⟳")
-        self.refresh_collections_btn.setToolTip(
-            "Fetch existing osu!lazer collections from your client.realm "
-            "via Collection Manager CLI."
+        self.refresh_collections_btn = self._icon_button(
+            "⟳", self._on_refresh_collections,
+            "Load your existing osu!lazer collections from client.realm "
+            "(via Collection Manager CLI)."
         )
-        self.refresh_collections_btn.clicked.connect(self._on_refresh_collections)
-        addto_row.addWidget(self.target_combo, stretch=1)
-        addto_row.addWidget(self.refresh_collections_btn)
-        addto_col.addLayout(addto_row)
-        two_col.addLayout(addto_col, stretch=1)
-        root.addLayout(two_col)
+        cv.addLayout(self._input_row(self.target_combo,
+                                     self.refresh_collections_btn))
 
-        # --- New-collection-name row (only visible when "Create new..." picked) ---
-        self.new_name_label = QLabel("New collection name")
-        self.new_name_label.setProperty("role", "micro")
+        # New-collection-name row (only shown for "Create new…")
+        self.new_name_label = self._field_label("New collection name")
         self.new_name_label.setVisible(False)
-        root.addWidget(self.new_name_label)
+        cv.addWidget(self.new_name_label)
         self.new_name_edit = QLineEdit()
         self.new_name_edit.setPlaceholderText("Name of the new collection")
         self.new_name_edit.setText(self.settings.get("new_collection_name", ""))
         self.new_name_edit.setVisible(False)
-        root.addWidget(self.new_name_edit)
+        cv.addWidget(self.new_name_edit)
 
-        # --- Parallel downloads + Import parallelism (two columns) ---
+        # Parallelism spinboxes
         spin_row = QHBoxLayout()
-        spin_row.setSpacing(6)
-
-        dl_col = QVBoxLayout(); dl_col.setSpacing(4)
-        dl_label = QLabel("Downloads")
-        dl_label.setProperty("role", "micro")
-        dl_col.addWidget(dl_label)
+        spin_row.setSpacing(14)
         self.download_parallel_spin = QSpinBox()
         self.download_parallel_spin.setRange(1, 32)
         self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 10)))
-        dl_col.addWidget(self.download_parallel_spin)
-        spin_row.addLayout(dl_col, stretch=1)
-
-        im_col = QVBoxLayout(); im_col.setSpacing(4)
-        im_label = QLabel("Imports")
-        im_label.setProperty("role", "micro")
-        im_col.addWidget(im_label)
+        self.download_parallel_spin.setToolTip("How many beatmapsets to download at once.")
+        spin_row.addLayout(self._labeled("Parallel downloads",
+                                         self.download_parallel_spin), stretch=1)
         self.import_parallel_spin = QSpinBox()
         self.import_parallel_spin.setRange(1, 8)
         self.import_parallel_spin.setValue(int(self.settings.get("import_parallel", 1)))
-        im_col.addWidget(self.import_parallel_spin)
-        spin_row.addLayout(im_col, stretch=1)
-        root.addLayout(spin_row)
+        self.import_parallel_spin.setToolTip("How many imports to hand osu!lazer at once.")
+        spin_row.addLayout(self._labeled("Parallel imports",
+                                         self.import_parallel_spin), stretch=1)
+        cv.addLayout(spin_row)
 
-        # --- Start / Cancel buttons (Start visible by default, Cancel hidden) ---
-        # Start / Cancel share the same stretchable slot — Cancel replaces
-        # Start during a run. Export sits to the right at a fixed width.
+        root.addWidget(card)
+
+        # --- Action row: Start/Cancel (swap) + Export ---
         action_row = QHBoxLayout()
-        action_row.setSpacing(6)
+        action_row.setSpacing(10)
 
-        self.start_btn = QPushButton("⬇  Start download")
+        self.start_btn = QPushButton("Start download")
         self.start_btn.setObjectName("primaryBtn")
         self.start_btn.clicked.connect(self._on_start)
-        self.start_btn.setEnabled(False)  # enabled when ids_edit has content
-        action_row.addWidget(self.start_btn, stretch=1)
+        self.start_btn.setEnabled(False)
+        action_row.addWidget(self.start_btn, stretch=2)
 
-        self.cancel_btn = QPushButton("✕  Cancel")
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("dangerBtn")
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.cancel_btn.setVisible(False)
-        action_row.addWidget(self.cancel_btn, stretch=1)
+        action_row.addWidget(self.cancel_btn, stretch=2)
 
         self.export_btn = QPushButton("Export to .db…")
         self.export_btn.setToolTip(
-            "Export the collection currently selected in the 'Add to' picker\n"
-            "to osu! stable's native collection.db format (accepted by\n"
-            "osu!collector.com, stable, and lazer). Requires CM CLI + a real\n"
-            "lazer collection picked (not a 'Don't merge' or default sentinel)."
+            "Export the collection currently selected above to osu! stable's\n"
+            "native collection.db format (accepted by osu!collector.com,\n"
+            "stable, and lazer). Requires CM CLI + a real lazer collection\n"
+            "picked (not a 'Don't merge' or default sentinel)."
         )
         self.export_btn.clicked.connect(self._on_export_collection)
-        action_row.addWidget(self.export_btn)
-
+        action_row.addWidget(self.export_btn, stretch=1)
         root.addLayout(action_row)
 
-        # --- Status line ---
+        # --- Status + progress ---
         self.status_label = QLabel("Ready")
         self.status_label.setProperty("role", "status")
         root.addWidget(self.status_label)
 
-        # --- Progress bar (hidden when idle) ---
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         root.addWidget(self.progress_bar)
 
-        # --- Log box (always visible, ~110px) ---
-        self.log_box = QPlainTextEdit()
-        self.log_box.setObjectName("logBox")
-        self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(110)
-        self.log_box.setMaximumHeight(180)
-        self.log_box.setPlainText(
-            "Ready. Paste a collection ID above and click Start to begin."
-        )
-        root.addWidget(self.log_box)
-
-        # --- Advanced expander + container ---
+        # --- Advanced (collapsible card) ---
         self.advanced_expander = QToolButton()
         self.advanced_expander.setObjectName("advancedExpander")
         self.advanced_expander.setCheckable(True)
-        self.advanced_expander.setText("▸ Advanced")
+        self.advanced_expander.setText("▸  Advanced settings")
+        self.advanced_expander.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                             QSizePolicy.Policy.Fixed)
         self.advanced_expander.toggled.connect(self._on_advanced_toggled)
         root.addWidget(self.advanced_expander)
 
-        self.advanced_container = QWidget()
+        self.advanced_container = self._make_card()
         self._build_advanced(self.advanced_container)
         self.advanced_container.setVisible(False)
         root.addWidget(self.advanced_container)
 
+        # --- Log card (carries the vertical stretch) ---
+        log_card = self._make_card()
+        lv = log_card.layout()
+        lv.addWidget(self._field_label("Activity log"))
+        self.log_box = QPlainTextEdit()
+        self.log_box.setObjectName("logBox")
+        self.log_box.setReadOnly(True)
+        self.log_box.setMinimumHeight(96)
+        self.log_box.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                   QSizePolicy.Policy.Expanding)
+        self.log_box.setPlainText(
+            "Ready. Paste a collection ID or URL above and click "
+            "Start download to begin."
+        )
+        lv.addWidget(self.log_box, stretch=1)
+        root.addWidget(log_card, stretch=1)
+
         # Restore advanced-expanded state from settings.
         if self.settings.get("advanced_expanded", False):
             self.advanced_expander.setChecked(True)
-            self.advanced_expander.setText("▾ Advanced")
-            self.advanced_container.setVisible(True)
 
-        # Initial Start-button state based on whatever the ids_edit holds.
+        # Sync the new-collection-name field to the restored picker value
+        # (setCurrentIndex during _reset_target_combo runs with signals
+        # blocked, so the handler wouldn't otherwise fire on startup).
+        self._on_target_changed(self.target_combo.currentIndex())
         self._update_start_enabled()
+        QTimer.singleShot(0, self._sync_scroll_min)
 
-    def _build_advanced(self, parent: QWidget) -> None:
-        """Build the contents of the collapsible Advanced section."""
-        layout = QVBoxLayout(parent)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(6)
+    def _sync_scroll_min(self) -> None:
+        """Pin the scroll content's minimum height to its natural height so
+        the scroll area scrolls (rather than letting QVBoxLayout crush
+        widgets below their preferred size) when the window is too short.
+        Above that height the log card's stretch fills the extra space."""
+        c = self._scroll_content
+        c.setMinimumHeight(c.sizeHint().height())
 
-        # ---- Paths subgroup ----
-        paths_label = QLabel("Paths")
-        paths_label.setProperty("role", "subgroup")
-        layout.addWidget(paths_label)
+    # ----- UI building blocks ---------------------------------------------
 
-        layout.addWidget(self._small_label("CM CLI command"))
-        cm_row = QHBoxLayout(); cm_row.setSpacing(0)
+    @staticmethod
+    def _make_card() -> QFrame:
+        """A rounded surface with an internal vertical layout."""
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 14, 16, 16)
+        lay.setSpacing(8)
+        return card
+
+    @staticmethod
+    def _field_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("role", "field")
+        return lbl
+
+    @staticmethod
+    def _input_row(field: QWidget, button: QWidget) -> QHBoxLayout:
+        """A line-edit/combo with a trailing icon button, snug together."""
+        row = QHBoxLayout()
+        row.setSpacing(7)
+        row.addWidget(field, stretch=1)
+        row.addWidget(button)
+        return row
+
+    def _labeled(self, text: str, widget: QWidget) -> QVBoxLayout:
+        """A micro field-label stacked above a widget."""
+        col = QVBoxLayout()
+        col.setSpacing(5)
+        col.addWidget(self._field_label(text))
+        col.addWidget(widget)
+        return col
+
+    @staticmethod
+    def _icon_button(glyph: str, handler, tooltip: str = "") -> QToolButton:
+        btn = QToolButton()
+        btn.setObjectName("iconBtn")
+        btn.setText(glyph)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        btn.clicked.connect(handler)
+        return btn
+
+    def _build_advanced(self, parent: QFrame) -> None:
+        """Build the contents of the collapsible Advanced card."""
+        layout = parent.layout()  # the card's QVBoxLayout
+        layout.setSpacing(7)
+
+        def section(text: str, top: bool = False) -> None:
+            lbl = QLabel(text)
+            lbl.setProperty("role", "section")
+            if not top:
+                lbl.setContentsMargins(0, 8, 0, 0)
+            layout.addWidget(lbl)
+
+        # ---- Paths ----
+        section("Paths", top=True)
+
+        layout.addWidget(self._field_label("Collection Manager CLI command"))
         _saved_cmd = self.settings.get("cm_cli_command", [])
         _saved_cmd_text = shlex.join(_saved_cmd) if isinstance(_saved_cmd, list) and _saved_cmd else ""
         self.cm_cli_edit = QLineEdit(_saved_cmd_text)
-        self.cm_cli_edit.setPlaceholderText("(auto-detect: wine flatpak or native CM CLI)")
+        self.cm_cli_edit.setPlaceholderText("(auto-detect: native CM CLI or wine flatpak)")
         self.cm_cli_edit.textChanged.connect(self._update_skip_imported_enabled)
-        cm_detect = QToolButton()
-        cm_detect.setText("Auto-detect")
+        cm_detect = QPushButton("Auto-detect")
         cm_detect.clicked.connect(self._on_detect_cm)
-        cm_row.addWidget(self.cm_cli_edit)
-        cm_row.addWidget(cm_detect)
-        layout.addLayout(cm_row)
+        layout.addLayout(self._input_row(self.cm_cli_edit, cm_detect))
 
-        layout.addWidget(self._small_label("client.realm"))
-        realm_row = QHBoxLayout(); realm_row.setSpacing(0)
+        layout.addWidget(self._field_label("client.realm path"))
         self.realm_edit = QLineEdit(self.settings.get(
             "lazer_realm_path", str(_default_lazer_realm_path())
         ))
-        realm_browse = QToolButton()
-        realm_browse.setText("…")
-        realm_browse.clicked.connect(self._on_browse_realm)
-        realm_row.addWidget(self.realm_edit)
-        realm_row.addWidget(realm_browse)
-        layout.addLayout(realm_row)
+        layout.addLayout(self._input_row(
+            self.realm_edit,
+            self._icon_button("…", self._on_browse_realm, "Locate client.realm"),
+        ))
 
-        layout.addWidget(self._small_label("osu!lazer binary"))
-        osu_row = QHBoxLayout(); osu_row.setSpacing(0)
+        layout.addWidget(self._field_label("osu!lazer binary"))
         self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
         self.osu_path_edit.setPlaceholderText("(auto-detect)")
-        osu_browse = QToolButton()
-        osu_browse.setText("…")
-        osu_browse.clicked.connect(self._on_browse_osu)
-        osu_row.addWidget(self.osu_path_edit)
-        osu_row.addWidget(osu_browse)
-        layout.addLayout(osu_row)
+        layout.addLayout(self._input_row(
+            self.osu_path_edit,
+            self._icon_button("…", self._on_browse_osu, "Locate the osu!lazer executable"),
+        ))
 
-        # ---- Behavior subgroup ----
-        beh_label = QLabel("Behavior")
-        beh_label.setProperty("role", "subgroup")
-        layout.addWidget(beh_label)
+        # ---- Behaviour ----
+        section("Behaviour")
 
-        self.auto_import_cb = QCheckBox("Auto-import maps into osu!lazer")
+        self.auto_import_cb = QCheckBox("Auto-import maps into osu!lazer as they download")
         self.auto_import_cb.setChecked(bool(self.settings.get("auto_import", True)))
         layout.addWidget(self.auto_import_cb)
 
-        self.skip_imported_cb = QCheckBox("Skip beatmapsets already imported")
+        self.skip_imported_cb = QCheckBox("Skip beatmapsets osu!lazer already has")
         self.skip_imported_cb.setChecked(bool(self.settings.get("skip_already_imported", True)))
         layout.addWidget(self.skip_imported_cb)
 
-        self.restart_lazer_cb = QCheckBox("Restart osu!lazer after merging")
+        self.restart_lazer_cb = QCheckBox("Restart osu!lazer after merging collections")
         self.restart_lazer_cb.setChecked(bool(self.settings.get("restart_lazer_after", True)))
         layout.addWidget(self.restart_lazer_cb)
 
@@ -2321,45 +2421,38 @@ class MainWindow(QMainWindow):
         self.generate_osdb_cb.setChecked(bool(self.settings.get("generate_osdb", False)))
         layout.addWidget(self.generate_osdb_cb)
 
-        self.consolidate_cb = QCheckBox("Consolidate .osdb into db/ subfolder")
+        self.consolidate_cb = QCheckBox("Consolidate .osdb files into a db/ subfolder")
         self.consolidate_cb.setChecked(bool(self.settings.get("consolidate_osdb", False)))
         layout.addWidget(self.consolidate_cb)
 
-        self.cleanup_cb = QCheckBox("Cleanup folders after import")
+        self.cleanup_cb = QCheckBox("Delete download folders after import")
         self.cleanup_cb.setChecked(bool(self.settings.get("cleanup_after_import", False)))
         layout.addWidget(self.cleanup_cb)
 
-        # ---- Tuning subgroup ----
-        tun_label = QLabel("Tuning")
-        tun_label.setProperty("role", "subgroup")
-        layout.addWidget(tun_label)
+        # ---- Tuning + maintenance ----
+        section("Tuning")
 
-        layout.addWidget(self._small_label("Import delay"))
+        tune_row = QHBoxLayout()
+        tune_row.setSpacing(14)
         self.import_delay_spin = QSpinBox()
         self.import_delay_spin.setRange(0, 5000)
         self.import_delay_spin.setSuffix(" ms")
         self.import_delay_spin.setSingleStep(50)
         self.import_delay_spin.setValue(int(self.settings.get("import_delay_ms", 300)))
-        layout.addWidget(self.import_delay_spin)
-
-        # ---- Maintenance subgroup ----
-        maint_label = QLabel("Maintenance")
-        maint_label.setProperty("role", "subgroup")
-        layout.addWidget(maint_label)
+        tune_row.addLayout(self._labeled("Import delay", self.import_delay_spin), stretch=1)
 
         self.recover_realm_btn = QPushButton("Recover realm from backup…")
         self.recover_realm_btn.clicked.connect(self._on_recover_realm)
-        layout.addWidget(self.recover_realm_btn)
+        recover_col = QVBoxLayout()
+        recover_col.setSpacing(5)
+        recover_col.addWidget(self._field_label("Maintenance"))
+        recover_col.addWidget(self.recover_realm_btn)
+        tune_row.addLayout(recover_col, stretch=1)
+        layout.addLayout(tune_row)
 
         # Keep the skip-imported gating logic alive even though the checkbox
-        # is now buried in Advanced (still needs CM CLI to be configured).
+        # is buried in Advanced (still needs CM CLI to be configured).
         self._update_skip_imported_enabled()
-
-    @staticmethod
-    def _small_label(text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setProperty("role", "micro")
-        return lbl
 
     # ----- settings persistence -------------------------------------------
 
@@ -2416,18 +2509,13 @@ class MainWindow(QMainWindow):
 
     def _on_advanced_toggled(self, checked: bool) -> None:
         self.advanced_container.setVisible(checked)
-        self.advanced_expander.setText("▾ Advanced" if checked else "▸ Advanced")
-        # Grow the window when Advanced opens so its rows aren't squished
-        # below their sizeHint. Defer one event-loop tick so Qt has finished
-        # re-laying out the container before we measure its preferred size.
-        # On collapse we DON'T shrink — preserves any user resize they did.
-        if checked:
-            QTimer.singleShot(0, self._grow_window_for_advanced)
-
-    def _grow_window_for_advanced(self) -> None:
-        hint = self.sizeHint()
-        if hint.height() > self.height():
-            self.resize(self.width(), hint.height())
+        self.advanced_expander.setText(
+            "▾  Advanced settings" if checked else "▸  Advanced settings"
+        )
+        # Recompute the scroll content's minimum height now that the
+        # Advanced card has shown/hidden, so the page scrolls if needed
+        # instead of squishing. Deferred a tick so the layout has settled.
+        QTimer.singleShot(0, self._sync_scroll_min)
 
     def _on_export_collection(self) -> None:
         """Export the picker-selected lazer collection to a single .db file."""
@@ -3136,6 +3224,12 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
+    # A single point-sized base font so every widget scales from one source
+    # and stays a consistent physical size from 1080p through 4K. Pixel
+    # sizes in the QSS that need to differ are set per-role there.
+    base_font = QFont(app.font())
+    base_font.setPointSizeF(10.0)
+    app.setFont(base_font)
     app.setStyleSheet(QSS)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)

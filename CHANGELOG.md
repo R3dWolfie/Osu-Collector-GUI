@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] — 2026-06-06
+
+The "UI overhaul" release — a from-scratch rebuild of the window layout and
+theme, plus a download-coverage fix that recovers maps the old code wrongly
+gave up on.
+
+### Changed
+
+- **Rebuilt the GUI.** Card-based layout with a clear header, a single
+  download card (IDs, output, target collection, parallelism), a prominent
+  cherry-red gradient primary button, and consistent button styling
+  throughout. Replaces the cramped single-column form with tiny 9px labels.
+- **Fonts are now point-sized**, so text stays a consistent physical size
+  from 1080p through 4K instead of rendering tiny on high-DPI displays — the
+  root of the old "doesn't scale" problem. A single base app font drives
+  everything.
+- **The window resizes cleanly.** The activity log lives in a stretchable
+  card that absorbs extra vertical space (no more dead air), and the whole
+  page sits in a scroll area so opening Advanced on a short window scrolls
+  instead of squishing widgets on top of each other. The old
+  grow-the-window-on-expand hack is gone.
+- **Advanced settings** is now a tidy collapsible card grouped into Paths /
+  Behaviour / Tuning, with clearer labels.
+
+### Fixed
+
+- **~half a collection showing as "not on mirror".** `BeatmapMirror.download`
+  treated a 404 from the *first* mirror it tried as "this map doesn't exist"
+  and gave up — but mirrors have different coverage, so a 404 on catboy.best
+  doesn't mean the set is gone. It now falls through to the other mirrors and
+  only reports "not on mirror" once every mirror has been tried. (Maps still
+  missing after the fix usually mean a mirror is unreachable on your network —
+  e.g. a DNS failure resolving one of the mirror hosts.)
+
+### Tests
+
+- `tests/test_mainwindow_smoke.py` — constructs the real MainWindow headlessly,
+  asserts every worker/handler/settings-wired widget still exists, and checks
+  the advanced toggle, target picker, and start-button gating.
+
 ## [0.7.2] — 2026-06-05
 
 ### Fixed
