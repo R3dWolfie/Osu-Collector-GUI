@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.2"
 APP_AUTHOR = "Red"
 
 
@@ -513,12 +513,22 @@ class BeatmapMirror:
 
                             filename = self._filename_from_response(r, beatmapset_id)
                             dest = dest_dir / filename
+                            # Already have a complete copy on disk — skip the
+                            # body download entirely (saves bandwidth on
+                            # re-runs and sidesteps the Windows rename-onto-
+                            # existing-file failure below).
+                            if dest.exists() and dest.stat().st_size > 0:
+                                return dest
                             tmp = dest.with_suffix(dest.suffix + ".part")
                             with open(tmp, "wb") as f:
                                 for chunk in r.iter_content(chunk_size=64 * 1024):
                                     if chunk:
                                         f.write(chunk)
-                            tmp.rename(dest)
+                            # os.replace overwrites atomically on every
+                            # platform; plain rename() raises FileExistsError
+                            # (WinError 183) on Windows when dest already
+                            # exists, e.g. a leftover .osz from a prior run.
+                            tmp.replace(dest)
                             return dest
                     except (requests.ConnectionError, requests.Timeout) as e:
                         # TCP-level failure: blacklist this mirror so other

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.2] — 2026-06-05
+
+### Fixed
+
+- **Windows: `[WinError 183] Cannot create a file when that file already
+  exists` on download.** `BeatmapMirror.download` finished each `.osz` by
+  renaming the `.part` temp onto the final name with `Path.rename`, which on
+  Windows refuses to overwrite an existing file — so any beatmapset already on
+  disk from a prior run failed. Now skips the body download entirely when a
+  complete `.osz` is already present, and uses `os.replace` (atomic overwrite on
+  all platforms) for the temp→final move otherwise.
+
+### Tests
+
+- `tests/test_download_rename.py` — fresh download writes the file with no
+  leftover `.part`; a pre-existing complete `.osz` is returned without
+  re-streaming or a rename conflict.
+
 ## [0.7.1] — 2026-06-05
 
 ### Fixed
