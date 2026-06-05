@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] — 2026-06-06
+
+The "max speed without rate-limiting" release. Downloads now self-tune to
+exactly as fast as each mirror tolerates.
+
+### Added
+
+- **Adaptive per-mirror concurrency (AIMD, like TCP congestion control).**
+  Each mirror has its own concurrency cap that probes upward while it stays
+  healthy and halves the moment it returns a 429/403, then cools down
+  briefly before recovering. There's no fixed parallel-download guess to
+  tune — the app finds the maximum safe rate per mirror on its own and
+  keeps the overall throughput at that edge.
+- When every eligible mirror is momentarily at capacity or cooling down, a
+  download now **waits for a slot rather than failing**, so high worker
+  counts apply back-pressure instead of dropping maps.
+
+### Changed
+
+- Default worker threads raised 10 → 24; the per-mirror caps are the real
+  governor now, so it's safe to leave the slider high. The "Parallel
+  downloads" tooltip explains this.
+- A 429 no longer fully blacklists a mirror for a minute — it just throttles
+  it down and keeps using it at the lower rate, which sustains far more
+  throughput when a mirror is merely busy rather than down.
+
+  Benchmarked against mirrors with hard concurrency limits (2–6): 400/400
+  sets downloaded, only ~4% of requests hit a 429 (each backed off cleanly),
+  and every mirror's cap settled at or just below its true limit — the
+  strict one self-throttling to a single connection.
+
+### Tests
+
+- `tests/test_adaptive_concurrency.py` — cap halving on 429, floor/ceiling
+  clamping, slow upward probing, and cap-gated mirror selection.
+
 ## [0.8.1] — 2026-06-06
 
 The "stop getting rate-limited" release — mirror handling reworked so load

@@ -63,7 +63,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0"
 APP_AUTHOR = "Red"
 
 
@@ -92,11 +92,24 @@ FALLBACK_MIRRORS = [
 MIRROR_DEAD_TTL_S = 60
 
 # Network limits — be polite to the mirrors
-DOWNLOAD_PARALLEL = 4   # how many .osz fetches in parallel within a collection
+DOWNLOAD_PARALLEL = 24  # default worker threads; the per-mirror adaptive
+                        # caps below are the real governor on concurrency
 DOWNLOAD_TIMEOUT_S = 120
 DOWNLOAD_CONNECT_TIMEOUT_S = 10   # fail fast if a mirror is rate-limiting our IP
 HTTP_RETRIES = 3
 HTTP_BACKOFF_S = 2
+
+# Adaptive per-mirror concurrency (AIMD — like TCP congestion control).
+# Each mirror starts at *_START simultaneous downloads and probes upward to
+# *_MAX while it stays healthy; a 429/403 halves it (down to *_MIN) and the
+# mirror cools down briefly. This self-tunes to the fastest rate each mirror
+# tolerates — "max speed without rate-limiting" — with no fixed guess.
+PER_MIRROR_START = 4
+PER_MIRROR_MIN = 1
+PER_MIRROR_MAX = 8
+PER_MIRROR_PROBE_EVERY = 8   # consecutive successes per +1 to the cap
+RATE_LIMIT_COOLDOWN_S = 8.0  # default pause for a 429 with no Retry-After
+DOWNLOAD_OVERALL_DEADLINE_S = 300  # give up on one set after this long
 
 CONFIG_DIR = Path.home() / (
     ".config" if sys.platform != "win32" else "AppData/Roaming"
@@ -459,6 +472,8 @@ class BeatmapMirror:
     # Class-level shared state, all guarded by _state_lock:
     #   _dead_until: {url -> monotonic time the blacklist expires}
     #   _active:     {url -> current concurrent-download count}
+    #   _limit:      {url -> current adaptive concurrency cap (AIMD)}
+    #   _success:    {url -> consecutive successes since the last cap bump}
     #   _rr_index:   monotonically increasing round-robin cursor; each
     #                download starts at the next mirror so load spreads
     #                evenly (1->2->3->4->1...) even at low parallelism,
@@ -467,6 +482,8 @@ class BeatmapMirror:
     # I/O never runs under the lock.
     _dead_until: dict[str, float] = {}
     _active: dict[str, int] = {}
+    _limit: dict[str, int] = {}
+    _success: dict[str, int] = {}
     _rr_index: int = 0
     _state_lock = __import__("threading").Lock()
 
@@ -515,26 +532,65 @@ class BeatmapMirror:
 
     @classmethod
     def reset_state(cls) -> None:
-        """Clear dead-cache + active counts. For tests + manual reset."""
+        """Clear dead-cache + active counts + adaptive caps. Tests + reset."""
         with cls._state_lock:
             cls._dead_until.clear()
             cls._active.clear()
+            cls._limit.clear()
+            cls._success.clear()
             cls._rr_index = 0
 
     @classmethod
+    def on_rate_limited(cls, url: str, retry_after: float | None) -> float:
+        """A mirror returned 429/403: multiplicatively halve its concurrency
+        cap (down to the floor) and cool it down briefly. Returns the
+        cooldown applied (seconds)."""
+        cooldown = retry_after if retry_after else RATE_LIMIT_COOLDOWN_S
+        with cls._state_lock:
+            cur = cls._limit.get(url, PER_MIRROR_START)
+            cls._limit[url] = max(PER_MIRROR_MIN, cur // 2)
+            cls._success[url] = 0
+            until = time.monotonic() + max(1.0, cooldown)
+            if until > cls._dead_until.get(url, 0.0):
+                cls._dead_until[url] = until
+        return cooldown
+
+    @classmethod
+    def on_success(cls, url: str) -> None:
+        """A clean download: additively probe the cap upward (one step per
+        PER_MIRROR_PROBE_EVERY consecutive successes), up to the ceiling."""
+        with cls._state_lock:
+            cur = cls._limit.get(url, PER_MIRROR_START)
+            if cur >= PER_MIRROR_MAX:
+                cls._success[url] = 0
+                return
+            n = cls._success.get(url, 0) + 1
+            if n >= PER_MIRROR_PROBE_EVERY:
+                cls._limit[url] = min(PER_MIRROR_MAX, cur + 1)
+                cls._success[url] = 0
+            else:
+                cls._success[url] = n
+
+    @classmethod
     def _acquire_least_busy(cls, candidates: list[str],
-                           excluding: set[str]) -> str | None:
+                           excluding: set[str],
+                           respect_caps: bool = False) -> str | None:
         """Atomically pick the least-busy alive mirror among `candidates`
         not in `excluding`, and increment its active count.
 
         Tie-break by index in `candidates` so the declared primary
         (typically catboy) wins on cold start and on equal counts.
 
-        Falls back to allowing dead mirrors when every alive candidate
-        is excluded — better to attempt and surface the failure than to
-        refuse to try at all.
+        With respect_caps=False (the default), falls back to allowing dead
+        mirrors when every alive candidate is excluded — better to attempt
+        and surface the failure than to refuse to try at all. Returns None
+        only when every candidate is in `excluding`.
 
-        Returns None only when every candidate is in `excluding`.
+        With respect_caps=True (the real download path), a mirror is only
+        eligible while its active count is below its adaptive cap, and dead
+        mirrors are NOT used as a fallback — None then means "nothing free
+        right now, wait and retry" (cooling down or at capacity), which the
+        caller distinguishes from "exhausted" via its own exclude set.
         """
         with cls._state_lock:
             now = time.monotonic()
@@ -548,7 +604,14 @@ class BeatmapMirror:
 
             available = [u for u in candidates
                          if u not in excluding and _alive(u)]
-            if not available:
+            if respect_caps:
+                # Only mirrors under their current adaptive cap are eligible;
+                # no dead-mirror fallback (we'd rather wait for a cooldown).
+                available = [
+                    u for u in available
+                    if cls._active.get(u, 0) < cls._limit.get(u, PER_MIRROR_START)
+                ]
+            elif not available:
                 # Every alive candidate excluded — allow dead mirrors so
                 # the caller still gets to try.
                 available = [u for u in candidates if u not in excluding]
@@ -576,98 +639,111 @@ class BeatmapMirror:
     def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure.
 
-        Mirror selection combines round-robin with least-busy fallback:
-        each download starts at the next mirror in rotation (so successive
-        downloads hit mirror 1, 2, 3, 4, 1, … and no single mirror takes
-        all the load — minimising rate-limiting), then within that rotated
-        order picks the least-busy alive mirror, skipping any blacklisted
-        by a prior 404-elsewhere / timeout / 429. Active counts and the
-        dead-list are shared process-wide across all parallel download
-        slots.
+        Mirror selection combines round-robin, adaptive per-mirror
+        concurrency, and a shared dead-list:
+
+        - Each download starts at the next mirror in rotation (1, 2, 3, 4,
+          1, …) so no single mirror takes all the load.
+        - A mirror is only used while its in-flight count is below its
+          adaptive cap, which probes upward on success and halves on a 429
+          — self-tuning to each mirror's tolerated speed.
+        - A 429/403 cools the mirror down briefly (without giving up on the
+          set); a 404 means this mirror doesn't have the set (try another);
+          a connection/timeout failure blacklists the mirror process-wide.
+
+        When every eligible mirror is momentarily at capacity or cooling
+        down, the call waits and retries (up to an overall deadline) rather
+        than failing — that's the back-pressure that keeps us at max speed
+        without tripping rate limits.
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
         last_error: Exception | None = None
-        tried: set[str] = set()
+        # Mirrors permanently out for THIS set: a 404 (not hosted here) or a
+        # hard connection failure. Distinct from the transient at-cap /
+        # cooling-down state, which we wait out instead of excluding.
+        exhausted: set[str] = set()
+        n_mirrors = len(self.urls)
 
-        # Rotate the mirror list so this download prefers the next mirror in
-        # sequence. _acquire_least_busy tie-breaks by position in this list,
-        # so the rotated primary wins on a cold/idle tie.
-        start = self._next_start() % len(self.urls)
+        start = self._next_start() % n_mirrors
         ordered = self.urls[start:] + self.urls[:start]
 
-        while True:
-            base_url = self._acquire_least_busy(ordered, excluding=tried)
+        deadline = time.monotonic() + DOWNLOAD_OVERALL_DEADLINE_S
+
+        while time.monotonic() < deadline:
+            if len(exhausted) >= n_mirrors:
+                break   # every mirror 404'd or hard-failed — genuinely gone
+
+            base_url = self._acquire_least_busy(
+                ordered, excluding=exhausted, respect_caps=True,
+            )
             if base_url is None:
-                break
+                # All non-exhausted mirrors are at capacity or cooling down.
+                # Wait for a slot/cooldown rather than failing.
+                time.sleep(0.2)
+                continue
+
             try:
                 url = f"{base_url}/{beatmapset_id}"
-                for attempt in range(HTTP_RETRIES):
-                    try:
-                        with self.session.get(url, stream=True,
-                                              timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
-                                                       DOWNLOAD_TIMEOUT_S),
-                                              allow_redirects=True) as r:
-                            if r.status_code == 404:
-                                # This mirror doesn't have the set — but
-                                # coverage differs per mirror, so a 404 here
-                                # does NOT mean the map is gone everywhere.
-                                # Fall through to the next mirror instead of
-                                # giving up (the old code returned None here,
-                                # which is why ~half a collection could show
-                                # up as "not on mirror").
-                                break
-                            if r.status_code in (429, 403):
-                                # Rate-limited / temporarily blocked. Do NOT
-                                # retry this mirror — that just deepens the
-                                # limit. Blacklist it (honouring Retry-After)
-                                # so every parallel slot backs off it, and
-                                # fall through to the other mirrors.
-                                cooldown = _parse_retry_after(
-                                    r.headers.get("Retry-After")
-                                ) or MIRROR_DEAD_TTL_S
-                                self._mark_dead(base_url, cooldown)
-                                last_error = requests.HTTPError(
-                                    f"{r.status_code} rate-limited by {base_url} "
-                                    f"(cooling down {int(cooldown)}s)"
-                                )
-                                break
-                            r.raise_for_status()
-
-                            filename = self._filename_from_response(r, beatmapset_id)
-                            dest = dest_dir / filename
-                            # Already have a complete copy on disk — skip the
-                            # body download entirely (saves bandwidth on
-                            # re-runs and sidesteps the Windows rename-onto-
-                            # existing-file failure below).
-                            if dest.exists() and dest.stat().st_size > 0:
-                                return dest
-                            tmp = dest.with_suffix(dest.suffix + ".part")
-                            with open(tmp, "wb") as f:
-                                for chunk in r.iter_content(chunk_size=64 * 1024):
-                                    if chunk:
-                                        f.write(chunk)
-                            # os.replace overwrites atomically on every
-                            # platform; plain rename() raises FileExistsError
-                            # (WinError 183) on Windows when dest already
-                            # exists, e.g. a leftover .osz from a prior run.
-                            tmp.replace(dest)
-                            return dest
-                    except (requests.ConnectionError, requests.Timeout) as e:
-                        # TCP-level failure: blacklist this mirror so other
-                        # parallel slots skip it. Break the inner retry loop
-                        # — retrying the same dead mirror wastes time.
-                        self._mark_dead(base_url)
-                        last_error = e
-                        break
-                    except requests.RequestException as e:
-                        last_error = e
-                        time.sleep(HTTP_BACKOFF_S * (attempt + 1))
+                with self.session.get(url, stream=True,
+                                      timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
+                                               DOWNLOAD_TIMEOUT_S),
+                                      allow_redirects=True) as r:
+                    if r.status_code == 404:
+                        # Coverage differs per mirror — a 404 here does NOT
+                        # mean the set is gone everywhere. Drop this mirror
+                        # for this set and try the others.
+                        exhausted.add(base_url)
                         continue
-                tried.add(base_url)
+                    if r.status_code in (429, 403):
+                        # Rate-limited: halve this mirror's cap and cool it
+                        # down (honouring Retry-After). Keep the set in play
+                        # — retry after the cooldown, possibly elsewhere.
+                        cooldown = self.on_rate_limited(
+                            base_url, _parse_retry_after(r.headers.get("Retry-After"))
+                        )
+                        last_error = requests.HTTPError(
+                            f"{r.status_code} from {base_url}; cap→"
+                            f"{self._limit.get(base_url)}, cooldown {int(cooldown)}s"
+                        )
+                        continue
+                    r.raise_for_status()
+
+                    filename = self._filename_from_response(r, beatmapset_id)
+                    dest = dest_dir / filename
+                    # Already have a complete copy on disk — skip the body
+                    # download (saves bandwidth on re-runs and sidesteps the
+                    # Windows rename-onto-existing-file failure below).
+                    if dest.exists() and dest.stat().st_size > 0:
+                        self.on_success(base_url)
+                        return dest
+                    tmp = dest.with_suffix(dest.suffix + ".part")
+                    with open(tmp, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=64 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                    # os.replace overwrites atomically on every platform;
+                    # plain rename() raises FileExistsError (WinError 183)
+                    # on Windows when dest already exists.
+                    tmp.replace(dest)
+                    self.on_success(base_url)
+                    return dest
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # TCP-level failure: blacklist this mirror process-wide and
+                # drop it for this set so we don't wait on it.
+                self._mark_dead(base_url)
+                exhausted.add(base_url)
+                last_error = e
+                continue
+            except requests.RequestException as e:
+                # Other transient HTTP error (5xx, etc.): brief cooldown on
+                # this mirror, then let the loop pick another.
+                self._mark_dead(base_url, HTTP_BACKOFF_S)
+                last_error = e
+                continue
             finally:
                 self._release(base_url)
 
-        # All mirrors tried and failed.
+        # Exhausted every mirror, or hit the deadline.
         if last_error:
             raise last_error
         return None
@@ -1459,7 +1535,8 @@ class DownloadJob:
     # Dedup
     skip_already_imported: bool = True        # probe lazer + skip its sets
     # Tuning
-    download_parallel: int = 10               # 1..32 — concurrent .osz fetches
+    download_parallel: int = DOWNLOAD_PARALLEL  # worker threads; per-mirror
+                                                # adaptive caps govern the rest
 
 
 class DownloadWorker(QObject):
@@ -2287,8 +2364,12 @@ class MainWindow(QMainWindow):
         spin_row.setSpacing(14)
         self.download_parallel_spin = QSpinBox()
         self.download_parallel_spin.setRange(1, 32)
-        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", 10)))
-        self.download_parallel_spin.setToolTip("How many beatmapsets to download at once.")
+        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", DOWNLOAD_PARALLEL)))
+        self.download_parallel_spin.setToolTip(
+            "Upper bound on simultaneous downloads. Each mirror is throttled "
+            "adaptively underneath this, so it's safe to leave high — the app "
+            "speeds up until a mirror pushes back, then backs off that mirror."
+        )
         spin_row.addLayout(self._labeled("Parallel downloads",
                                          self.download_parallel_spin), stretch=1)
         self.import_parallel_spin = QSpinBox()
