@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 APP_AUTHOR = "Red"
 
 
@@ -1234,9 +1234,15 @@ class OsuLazerImporter:
                 if p.exists():
                     candidates.append(p)
         elif sys.platform == "win32":
-            # Squirrel.Windows installer drops it under Local/osulazer
-            # with the actual exe inside an "app-X.Y.Z" subfolder.
             base = home / "AppData/Local/osulazer"
+            # Current osu!lazer ships with Velopack, which keeps the live
+            # exe in a "current" subfolder (swapped atomically on update).
+            # This is THE common case on any recent install — check first.
+            p = base / "current" / "osu!.exe"
+            if p.exists():
+                candidates.append(p)
+            # Legacy Squirrel.Windows installs dropped it under an
+            # "app-X.Y.Z" subfolder instead.
             for ver in sorted(base.glob("app-*"), reverse=True):
                 p = ver / "osu!.exe"
                 if p.exists():
@@ -1438,6 +1444,18 @@ class DownloadWorker(QObject):
     def run(self) -> None:
         ok_collections = 0
         total = len(self.job.collection_ids)
+
+        # Make a missing lazer binary LOUD. Without this the auto-import
+        # path no-ops silently — maps download fine but never reach the
+        # game, with no clue why.
+        if self.job.auto_import and not self.importer.binary:
+            self.log.emit(
+                "[lazer] WARNING: auto-import is ON but no osu!lazer "
+                "executable was found. Downloaded maps will NOT be imported "
+                "into the game. Set the 'osu!lazer binary' path in the "
+                "Advanced section (e.g. Windows: "
+                r"%LOCALAPPDATA%\osulazer\current\osu!.exe)."
+            )
 
         for idx, cid in enumerate(self.job.collection_ids, 1):
             if self._cancelled:

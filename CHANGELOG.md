@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] — 2026-06-05
+
+### Fixed
+
+- **Maps not importing into osu!lazer on Windows.** Current osu!lazer ships
+  with the Velopack updater, which keeps the live executable in
+  `%LOCALAPPDATA%\osulazer\current\osu!.exe`. `OsuLazerImporter._locate_binary`
+  only knew the legacy Squirrel (`app-X.Y.Z\`) and top-level layouts, so on any
+  recent install it found nothing, `self.importer.binary` was `None`, and the
+  auto-import path no-opped **silently** — beatmaps downloaded fine but never
+  reached the game. Now checks the Velopack `current\` folder first (preferred
+  over any stale `app-*` folder), keeping the legacy paths as fallbacks.
+- **Silent auto-import failure is now loud.** When auto-import is enabled but no
+  osu!lazer executable can be found, the run log prints an explicit warning with
+  the expected path instead of quietly importing nothing.
+
+### Tests
+
+- `tests/test_locate_lazer.py` — covers Velopack `current\`, legacy Squirrel
+  `app-*\`, the current-over-legacy preference, and the not-installed case.
+
 ## [0.7.0] — 2026-05-12
 
 The "actually looks good now" release. Replaces the dense scrolling QFormLayout stack from v0.5.0 with a single-page progressive-disclosure layout themed in Cherry red on a dark base. Functional behavior (download, probe, merge, mirrors) is unchanged — this is purely structure + styling.
