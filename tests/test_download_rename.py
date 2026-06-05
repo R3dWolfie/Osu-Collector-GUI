@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 from osu_collector_gui import BeatmapMirror
 
+VALID_OSZ = b"PK\x03\x04" + b"\x00" * 4000   # ZIP magic + plausible size
+
 
 class _FakeResponse:
     def __init__(self, chunks, filename):
@@ -28,20 +30,20 @@ class _FakeResponse:
 
 
 def _mirror_with_response(resp):
-    m = BeatmapMirror(primary="https://mirror")
+    m = BeatmapMirror(primary="https://mirror/{id}")
     m.session = MagicMock()
     m.session.get.return_value = resp
     return m
 
 
 def test_download_fresh_writes_file(tmp_path):
-    resp = _FakeResponse([b"oszdata"], "123 Artist - Title.osz")
+    resp = _FakeResponse([VALID_OSZ], "123 Artist - Title.osz")
     m = _mirror_with_response(resp)
 
     out = m.download(123, tmp_path)
 
     assert out == tmp_path / "123 Artist - Title.osz"
-    assert out.read_bytes() == b"oszdata"
+    assert out.read_bytes() == VALID_OSZ
     # No leftover .part file.
     assert list(tmp_path.glob("*.part")) == []
 
@@ -52,8 +54,7 @@ def test_download_skips_when_complete_file_exists(tmp_path):
     existing = tmp_path / "123 Artist - Title.osz"
     existing.write_bytes(b"already-here")
 
-    resp = _FakeResponse([b"new-body-should-not-be-written"],
-                         "123 Artist - Title.osz")
+    resp = _FakeResponse([VALID_OSZ], "123 Artist - Title.osz")
     iter_spy = MagicMock(wraps=resp.iter_content)
     resp.iter_content = iter_spy
     m = _mirror_with_response(resp)

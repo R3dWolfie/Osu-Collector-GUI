@@ -4,6 +4,12 @@ from unittest.mock import MagicMock
 
 from osu_collector_gui import BeatmapMirror, _parse_retry_after
 
+VALID_OSZ = b"PK\x03\x04" + b"\x00" * 4000
+
+
+def _prefix(template: str) -> str:
+    return template.split("{id}")[0]
+
 
 def test_parse_retry_after_seconds():
     assert _parse_retry_after("120") == 120.0
@@ -43,20 +49,21 @@ def test_rate_limited_mirror_is_blacklisted_and_falls_through(tmp_path):
     rate-limited one."""
     m = BeatmapMirror()
     primary = m.urls[0]
+    primary_prefix = _prefix(primary)
     calls: list[str] = []
 
     def fake_get(url, **kwargs):
         calls.append(url)
-        if url.startswith(primary):
+        if url.startswith(primary_prefix):
             return _Resp(429, headers={"Retry-After": "180"})
-        return _Resp(200, body=b"osz-bytes")
+        return _Resp(200, body=VALID_OSZ)
 
     m.session = MagicMock()
     m.session.get.side_effect = fake_get
 
     out = m.download(123, tmp_path)
 
-    assert out is not None and out.read_bytes() == b"osz-bytes"
+    assert out is not None and out.read_bytes() == VALID_OSZ
     # Primary was tried exactly once (no wasteful retries) and is now dead.
-    assert sum(1 for u in calls if u.startswith(primary)) == 1
+    assert sum(1 for u in calls if u.startswith(primary_prefix)) == 1
     assert BeatmapMirror._is_dead(primary)

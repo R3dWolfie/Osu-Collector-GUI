@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] — 2026-06-06
+
+The "fix the failed imports + add mirrors" release.
+
+### Fixed
+
+- **osu!lazer "Beatmap import failed" spam.** Mirrors behind Cloudflare can
+  answer a download with HTTP 200 but an HTML/JSON rate-limit page instead
+  of the file; that got saved as a `.osz` and lazer then failed to import
+  it. Downloads are now validated — the file must start with the ZIP magic
+  (`PK`) and, when the server sends Content-Length, be complete — otherwise
+  the mirror is skipped and another is tried. No more garbage handed to
+  lazer.
+- **Wrong osu.direct host.** The mirror was `api.osu.direct`, which doesn't
+  resolve ("Failed to resolve 'api.osu.direct'"); the working host is
+  `osu.direct/d/{id}`. Fixed — that mirror is usable again.
+- **"Hard stuck after start", then crawling.** A single download could block
+  a worker for up to 5 minutes when a mirror sent a long `Retry-After`. The
+  per-set deadline is now 90 s (was 300), a rate-limit cooldown is capped at
+  30 s no matter what the server asks, and each mirror starts at a gentler
+  concurrency of 2 so the opening burst doesn't trip a 429 immediately.
+
+### Added
+
+- **Nekoha mirror** (`mirror.nekoha.moe`) — verified fast — joins the
+  built-in pool (now catboy, nerinyan, osu.direct, nekoha, beatconnect).
+- **Custom mirror URLs.** Advanced → Mirrors takes one URL template per
+  line (`https://host/path/{id}`, or a base URL that gets `/{id}` appended);
+  yours are tried before the built-ins. Mirrors are now URL templates, so
+  endpoints with different path schemes work.
+
+  (Sayobot was evaluated but only 302-redirects to a China-only CDN and
+  didn't deliver bytes internationally, so it's left out of the defaults —
+  add it as a custom mirror if it works for you.)
+
+### Tests
+
+- `tests/test_osz_validation.py`, `tests/test_mirror_templates.py` — non-osz
+  / truncated rejection, template normalization, custom-mirror ordering, and
+  the corrected default mirror set.
+
 ## [0.9.0] — 2026-06-06
 
 The "max speed without rate-limiting" release. Downloads now self-tune to

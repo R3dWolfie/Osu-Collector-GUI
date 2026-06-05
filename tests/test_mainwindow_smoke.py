@@ -28,7 +28,7 @@ REQUIRED_WIDGETS = [
     "advanced_container", "cm_cli_edit", "realm_edit", "osu_path_edit",
     "auto_import_cb", "skip_imported_cb", "restart_lazer_cb",
     "generate_osdb_cb", "consolidate_cb", "cleanup_cb", "import_delay_spin",
-    "recover_realm_btn",
+    "recover_realm_btn", "custom_mirror_edit",
 ]
 
 

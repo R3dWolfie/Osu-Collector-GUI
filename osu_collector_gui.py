@@ -63,7 +63,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 APP_AUTHOR = "Red"
 
 
@@ -80,11 +80,15 @@ def _default_lazer_realm_path() -> Path:
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+https://github.com/R3dWolfie/Osu-Collector-GUI)"
 
 OSU_COLLECTOR_API = "https://osucollector.com/api"
-DEFAULT_MIRROR = "https://catboy.best/d"   # /<beatmapset_id>
+# Mirror download endpoints as URL templates — "{id}" is the beatmapset id.
+# Templates (not a fixed "/d/<id>") let mirrors use different path schemes,
+# e.g. Nekoha's /api4/download/. All verified to stream raw .osz bytes.
+DEFAULT_MIRROR = "https://catboy.best/d/{id}"
 FALLBACK_MIRRORS = [
-    "https://api.nerinyan.moe/d",
-    "https://api.osu.direct/d",
-    "https://beatconnect.io/b",
+    "https://api.nerinyan.moe/d/{id}",
+    "https://osu.direct/d/{id}",                  # NOT api.osu.direct (no DNS)
+    "https://mirror.nekoha.moe/api4/download/{id}",
+    "https://beatconnect.io/b/{id}",
 ]
 
 # After a mirror's connect fails, blacklist it for this many seconds so
@@ -104,12 +108,16 @@ HTTP_BACKOFF_S = 2
 # *_MAX while it stays healthy; a 429/403 halves it (down to *_MIN) and the
 # mirror cools down briefly. This self-tunes to the fastest rate each mirror
 # tolerates — "max speed without rate-limiting" — with no fixed guess.
-PER_MIRROR_START = 4
+PER_MIRROR_START = 2         # start gentle so the opening burst across all
+                             # parallel slots doesn't trip a 429 immediately
 PER_MIRROR_MIN = 1
 PER_MIRROR_MAX = 8
-PER_MIRROR_PROBE_EVERY = 8   # consecutive successes per +1 to the cap
+PER_MIRROR_PROBE_EVERY = 6   # consecutive successes per +1 to the cap
 RATE_LIMIT_COOLDOWN_S = 8.0  # default pause for a 429 with no Retry-After
-DOWNLOAD_OVERALL_DEADLINE_S = 300  # give up on one set after this long
+RATE_LIMIT_COOLDOWN_MAX = 30.0   # never sideline a mirror longer than this,
+                                 # so one big Retry-After can't stall a set
+DOWNLOAD_OVERALL_DEADLINE_S = 90   # give up on one set after this long and
+                                   # move on, rather than blocking a worker
 
 CONFIG_DIR = Path.home() / (
     ".config" if sys.platform != "win32" else "AppData/Roaming"
@@ -489,6 +497,7 @@ class BeatmapMirror:
 
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
+                 extra: Iterable[str] = (),
                  pool_maxsize: int = 32) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
@@ -501,7 +510,29 @@ class BeatmapMirror:
         )
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
-        self.urls = [primary, *fallbacks]
+        # User-supplied custom mirrors go first so they're preferred, then
+        # the built-ins. De-duplicated, order preserved.
+        seen: set[str] = set()
+        self.urls = [
+            u for u in [*extra, primary, *fallbacks]
+            if u and not (u in seen or seen.add(u))
+        ]
+
+    @staticmethod
+    def normalize_template(raw: str) -> str | None:
+        """Turn a user-entered mirror URL into a download template.
+
+        Accepts a full template containing "{id}", or a base URL to which
+        "/{id}" is appended. Returns None for empty/non-http input.
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        if not (raw.startswith("http://") or raw.startswith("https://")):
+            return None
+        if "{id}" in raw:
+            return raw
+        return raw.rstrip("/") + "/{id}"
 
     @classmethod
     def _next_start(cls) -> int:
@@ -546,6 +577,7 @@ class BeatmapMirror:
         cap (down to the floor) and cool it down briefly. Returns the
         cooldown applied (seconds)."""
         cooldown = retry_after if retry_after else RATE_LIMIT_COOLDOWN_S
+        cooldown = min(cooldown, RATE_LIMIT_COOLDOWN_MAX)
         with cls._state_lock:
             cur = cls._limit.get(url, PER_MIRROR_START)
             cls._limit[url] = max(PER_MIRROR_MIN, cur // 2)
@@ -683,7 +715,7 @@ class BeatmapMirror:
                 continue
 
             try:
-                url = f"{base_url}/{beatmapset_id}"
+                url = base_url.format(id=beatmapset_id)
                 with self.session.get(url, stream=True,
                                       timeout=(DOWNLOAD_CONNECT_TIMEOUT_S,
                                                DOWNLOAD_TIMEOUT_S),
@@ -717,10 +749,40 @@ class BeatmapMirror:
                         self.on_success(base_url)
                         return dest
                     tmp = dest.with_suffix(dest.suffix + ".part")
+                    head = b""
+                    written = 0
                     with open(tmp, "wb") as f:
                         for chunk in r.iter_content(chunk_size=64 * 1024):
                             if chunk:
+                                if not head:
+                                    head = chunk[:4]
+                                written += len(chunk)
                                 f.write(chunk)
+
+                    # Validate it's actually a .osz (ZIP) and complete. Some
+                    # mirrors answer 200 with a Cloudflare/rate-limit HTML or
+                    # JSON page instead of the file; saved as .osz that makes
+                    # osu!lazer report "Beatmap import failed". A short read vs
+                    # Content-Length means a truncated download. Reject either
+                    # and try another mirror.
+                    expected = r.headers.get("Content-Length")
+                    truncated = (expected is not None
+                                 and expected.isdigit()
+                                 and written < int(expected))
+                    if head[:2] != b"PK" or written < 1024 or truncated:
+                        tmp.unlink(missing_ok=True)
+                        # A mirror serving garbage for a set it claims (200)
+                        # is misbehaving — cool it down so other slots skip
+                        # it briefly too, and try the next mirror for this set.
+                        self._mark_dead(base_url, HTTP_BACKOFF_S)
+                        exhausted.add(base_url)
+                        why = ("truncated" if truncated
+                               else "non-.osz response")
+                        last_error = requests.HTTPError(
+                            f"{base_url} returned a {why} for {beatmapset_id}"
+                        )
+                        continue
+
                     # os.replace overwrites atomically on every platform;
                     # plain rename() raises FileExistsError (WinError 183)
                     # on Windows when dest already exists.
@@ -1524,6 +1586,7 @@ class DownloadJob:
     import_parallel: int = 1            # 1..8 — concurrent import calls
     import_delay_ms: int = 0            # min delay between import calls
     mirror_url: str = DEFAULT_MIRROR
+    extra_mirrors: list[str] = field(default_factory=list)  # user templates
     # Lazer collection merging via CM CLI
     add_to_lazer_collections: bool = False
     cm_cli_command: list[str] | None = None  # full argv prefix
@@ -1558,7 +1621,8 @@ class DownloadWorker(QObject):
         self.job = job
         self._cancelled = False
         self.api = OsuCollectorClient()
-        self.mirror = BeatmapMirror(primary=job.mirror_url)
+        self.mirror = BeatmapMirror(primary=job.mirror_url,
+                                    extra=job.extra_mirrors)
         # Always construct the importer so we know the lazer binary path
         # for the post-merge restart, even if auto_import is off. The
         # _maybe_import path checks job.auto_import before actually
@@ -2559,6 +2623,23 @@ class MainWindow(QMainWindow):
             self._icon_button("…", self._on_browse_osu, "Locate the osu!lazer executable"),
         ))
 
+        # ---- Mirrors ----
+        section("Mirrors")
+        layout.addWidget(self._field_label("Extra mirror URLs (one per line)"))
+        self.custom_mirror_edit = QPlainTextEdit(self.settings.get("custom_mirrors", ""))
+        self.custom_mirror_edit.setPlaceholderText(
+            "https://my-mirror.example/d/{id}   —   {id} is the beatmapset id; "
+            "a plain base URL gets /{id} appended. Tried before the built-ins."
+        )
+        self.custom_mirror_edit.setMaximumHeight(64)
+        layout.addWidget(self.custom_mirror_edit)
+        builtins = ", ".join(u.split("//", 1)[1].split("/", 1)[0] for u in
+                             [DEFAULT_MIRROR, *FALLBACK_MIRRORS])
+        hint = QLabel(f"Built-in mirrors: {builtins}")
+        hint.setProperty("role", "status")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
         # ---- Behaviour ----
         section("Behaviour")
 
@@ -2641,6 +2722,7 @@ class MainWindow(QMainWindow):
             "download_parallel": self.download_parallel_spin.value(),
             "import_delay_ms": self.import_delay_spin.value(),
             "osu_binary": self.osu_path_edit.text(),
+            "custom_mirrors": self.custom_mirror_edit.toPlainText(),
             "skip_already_imported": self.skip_imported_cb.isChecked(),
             "cm_cli_command": cm_list,
             "lazer_realm_path": self.realm_edit.text(),
@@ -3217,10 +3299,18 @@ class MainWindow(QMainWindow):
             ud = self.target_combo.currentData()
             target_name = ud if ud else target_text
 
+        # Parse any user-supplied custom mirrors (one per line) into templates.
+        extra_mirrors: list[str] = []
+        for line in self.custom_mirror_edit.toPlainText().splitlines():
+            tmpl = BeatmapMirror.normalize_template(line)
+            if tmpl:
+                extra_mirrors.append(tmpl)
+
         job = DownloadJob(
             collection_ids=ids,
             output_dir=out_dir,
             download_beatmaps=True,
+            extra_mirrors=extra_mirrors,
             generate_osdb=self.generate_osdb_cb.isChecked(),
             auto_import=self.auto_import_cb.isChecked(),
             osu_binary=self.osu_path_edit.text().strip() or None,
