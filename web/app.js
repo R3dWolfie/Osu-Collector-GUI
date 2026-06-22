@@ -155,11 +155,13 @@ async function runPreview() {
       el.classList.add("err");
       el.textContent = "// collection " + c.id + " — " + c.error;
     } else {
+      const kicker = c.count != null ? `// ${c.count} maps` : `// collection`;
+      const by = c.uploader ? `by ${escapeHtml(c.uploader)} · #${c.id}` : `#${c.id}`;
       el.innerHTML =
         (c.cover ? `<div class="bg" style="background-image:url('${c.cover}')"></div><div class="duo"></div>` : "") +
-        `<div class="p-kicker">// ${c.count} maps</div>` +
+        `<div class="p-kicker">${kicker}</div>` +
         `<div class="p-name">${escapeHtml(c.name)}</div>` +
-        `<div class="p-by">by ${escapeHtml(c.uploader)} · #${c.id}</div>`;
+        `<div class="p-by">${by}</div>`;
     }
     box.appendChild(el);
   });
