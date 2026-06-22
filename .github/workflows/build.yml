@@ -79,6 +79,15 @@ jobs:
           Write-Host "Version: $ver"
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          # --- bundle installer dependencies (Collection Manager CLI + WebView2) ---
+          New-Item -ItemType Directory -Force -Path deps\cm-cli | Out-Null
+          Write-Host "Fetching Collection Manager CLI..."
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Piotrekol/CollectionManager/releases/latest/download/CollectionManager-CLI.zip" -OutFile deps\cm-cli.zip
+          Expand-Archive -Path deps\cm-cli.zip -DestinationPath deps\cm-cli -Force
+          Remove-Item deps\cm-cli\*.pdb -ErrorAction SilentlyContinue
+          if (-not (Test-Path "deps\cm-cli\CollectionManager.App.Cli.exe")) { throw "CM CLI not unpacked" }
+          Write-Host "Fetching Edge WebView2 bootstrapper..."
+          Invoke-WebRequest -UseBasicParsing -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile deps\MicrosoftEdgeWebview2Setup.exe
           & $iscc "/DAppVersion=$ver" packaging\windows-installer.iss
           if (-not (Test-Path "Output\osu-collector-gui-Setup.exe")) {
             throw "installer not produced"
