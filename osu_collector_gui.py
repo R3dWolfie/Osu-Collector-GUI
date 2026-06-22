@@ -64,6 +64,10 @@ FALLBACK_MIRRORS = [
     "https://osu.direct/d/{id}",                  # NOT api.osu.direct (no DNS)
     "https://mirror.nekoha.moe/api4/download/{id}",
     "https://beatconnect.io/b/{id}",
+    # CN-hosted (redirects to a high port); listed last so the least-busy
+    # tie-break treats it as lowest-priority bonus capacity — it only soaks up
+    # downloads when the global mirrors are all at their adaptive cap.
+    "https://dl.sayobot.cn/beatmaps/download/full/{id}",
 ]
 
 # After a mirror's connect fails, blacklist it for this many seconds so
@@ -71,7 +75,7 @@ FALLBACK_MIRRORS = [
 MIRROR_DEAD_TTL_S = 60
 
 # Network limits — be polite to the mirrors
-DOWNLOAD_PARALLEL = 24  # default worker threads; the per-mirror adaptive
+DOWNLOAD_PARALLEL = 48  # default worker threads; the per-mirror adaptive
                         # caps below are the real governor on concurrency
 DOWNLOAD_TIMEOUT_S = 120
 DOWNLOAD_CONNECT_TIMEOUT_S = 10   # fail fast if a mirror is rate-limiting our IP
@@ -86,8 +90,8 @@ HTTP_BACKOFF_S = 2
 PER_MIRROR_START = 2         # start gentle so the opening burst across all
                              # parallel slots doesn't trip a 429 immediately
 PER_MIRROR_MIN = 1
-PER_MIRROR_MAX = 8
-PER_MIRROR_PROBE_EVERY = 6   # consecutive successes per +1 to the cap
+PER_MIRROR_MAX = 12
+PER_MIRROR_PROBE_EVERY = 4   # consecutive successes per +1 to the cap
 RATE_LIMIT_COOLDOWN_S = 8.0  # default pause for a 429 with no Retry-After
 RATE_LIMIT_COOLDOWN_MAX = 30.0   # never sideline a mirror longer than this,
                                  # so one big Retry-After can't stall a set
@@ -279,7 +283,7 @@ class BeatmapMirror:
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
                  extra: Iterable[str] = (),
-                 pool_maxsize: int = 32) -> None:
+                 pool_maxsize: int = 64) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         # Size the connection pool to the max parallelism so high worker
@@ -287,7 +291,7 @@ class BeatmapMirror:
         # connections per host, so >10 parallel downloads to one mirror
         # would queue (or churn connections) — a hidden serialization.
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=8, pool_maxsize=pool_maxsize,
+            pool_connections=16, pool_maxsize=pool_maxsize,
         )
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
