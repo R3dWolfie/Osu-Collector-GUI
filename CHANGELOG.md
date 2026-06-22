@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] — 2026-06-22
+
+### Fixed
+
+- **No "has osu!lazer finished importing?" prompt when there's nothing to gate.**
+  It now appears only for an actual collection merge, or when cleanup-after-import
+  needs the source files released — not after a plain download + import with no
+  collection chosen.
+
 ## [1.1.2] — 2026-06-22
 
 ### Fixed
