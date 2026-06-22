@@ -37,6 +37,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --windowed --onefile `
             --name osu-collector-gui `
+            --add-data "web;web" `
             osu_collector_gui.py
 
       - name: Smoke test (binary exists and is non-empty)

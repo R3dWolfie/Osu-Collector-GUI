@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>osu!collector-gui</title>
+
+  <!-- Apply the saved theme before first paint to avoid a flash. -->
+  <script>
+    try {
+      var t = localStorage.getItem("oc-theme");
+      if (t === "light" || t === "dark")
+        document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;900&family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- ============================ TOP BAR ============================ -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">R</div>
+        <div class="wordmark">
+          <h1>osu!collector</h1>
+          <span class="tag">// downloader</span>
+        </div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <span class="ver" id="version">v—</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle theme">◐</button>
+    </header>
+
+    <!-- ============================ SIDEBAR ============================ -->
+    <nav class="sidebar">
+      <div class="kicker nav-kicker">// command deck</div>
+      <button class="nav-item active" data-view="download">
+        <span class="ico">↧</span> Download
+      </button>
+      <button class="nav-item" data-view="activity">
+        <span class="ico">▤</span> Activity
+        <span class="nav-badge hidden" id="activity-badge">●</span>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <span class="ico">⚙</span> Settings
+      </button>
+      <div class="sidebar-foot">
+        <div>R3D · CHERRY</div>
+        <div id="foot-detect">scanning…</div>
+      </div>
+    </nav>
+
+    <!-- ============================== MAIN ============================= -->
+    <main class="main">
+      <!-- ----------------------- DOWNLOAD VIEW ---------------------- -->
+      <section class="view active container" id="view-download">
+        <div class="view-head">
+          <span class="kicker">// paste collection</span>
+          <h2>Drop a link.<br />Get the maps.</h2>
+          <p>Paste an osu!collector collection link or ID, pick where it lands,
+             hit go. Everything else auto-detects.</p>
+        </div>
+
+        <div class="card">
+          <label class="field-label" for="ids">Collection link or ID</label>
+          <textarea id="ids" class="hero-input" spellcheck="false"
+            placeholder="https://osucollector.com/collections/12345&#10;…or just 12345 — paste as many as you like"></textarea>
+          <div class="posters" id="posters"></div>
+        </div>
+
+        <div class="card">
+          <label class="field-label" for="target">Import into osu!lazer collection</label>
+          <select id="target" class="select"></select>
+          <div id="new-name-wrap" class="hidden" style="margin-top:12px;">
+            <label class="field-label" for="new-name">New collection name</label>
+            <input id="new-name" class="text-input" placeholder="e.g. Tournament pool" />
+          </div>
+        </div>
+
+        <div class="go-row">
+          <button class="btn btn-primary btn-go" id="go" disabled>Download</button>
+        </div>
+      </section>
+
+      <!-- ----------------------- ACTIVITY VIEW ---------------------- -->
+      <section class="view container" id="view-activity">
+        <div class="view-head">
+          <span class="kicker">// command-center feed</span>
+          <h2>Activity</h2>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <span class="field-label" style="margin:0;">Live log</span>
+            <button class="btn btn-ghost" id="open-folder" style="padding:7px 13px;font-size:12px;">Open output folder</button>
+          </div>
+          <div class="log" id="log">Ready. Paste a collection link on the Download tab and hit go.</div>
+        </div>
+      </section>
+
+      <!-- ----------------------- SETTINGS VIEW ---------------------- -->
+      <section class="view container" id="view-settings">
+        <div class="view-head">
+          <span class="kicker">// advanced</span>
+          <h2>Settings</h2>
+          <p>The defaults handle the common case. Tune here only if you need to.</p>
+        </div>
+
+        <div class="card">
+          <span class="kicker" style="display:block;margin-bottom:14px;">// detected</span>
+          <div class="detect-line" id="d-osu"><span class="pill">osu!lazer</span><span class="path">—</span></div>
+          <div class="detect-line" id="d-realm"><span class="pill">client.realm</span><span class="path">—</span></div>
+          <div class="detect-line" id="d-cm"><span class="pill">collection mgr</span><span class="path">—</span></div>
+        </div>
+
+        <div class="card">
+          <label class="field-label" for="output">Output folder</label>
+          <div class="input-row">
+            <input id="output" class="text-input mono" />
+            <button class="btn" id="browse-output">Browse…</button>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="card">
+            <span class="kicker" style="display:block;margin-bottom:6px;">// behaviour</span>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Auto-import into osu!lazer</div>
+                <div class="d">Send each map to lazer the moment it downloads.</div></div>
+              <label class="switch"><input type="checkbox" id="auto_import" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Skip already-imported maps</div>
+                <div class="d">Probe lazer and don't re-download what you have.</div></div>
+              <label class="switch"><input type="checkbox" id="skip_already_imported" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Restart osu!lazer after merging</div>
+                <div class="d">Relaunch the game once collections are written back.</div></div>
+              <label class="switch"><input type="checkbox" id="restart_lazer_after" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <span class="kicker" style="display:block;margin-bottom:6px;">// export &amp; cleanup</span>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Generate .osdb files</div>
+                <div class="d">Write a Collection Manager database per collection.</div></div>
+              <label class="switch"><input type="checkbox" id="generate_osdb" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Consolidate .osdb into db/</div>
+                <div class="d">Gather all .osdb files into one subfolder.</div></div>
+              <label class="switch"><input type="checkbox" id="consolidate_osdb" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="meta"><div class="t">Cleanup folders after import</div>
+                <div class="d">Delete the per-collection download folders when done.</div></div>
+              <label class="switch"><input type="checkbox" id="cleanup_after_import" />
+                <span class="track"></span><span class="thumb"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <span class="kicker" style="display:block;margin-bottom:10px;">// tuning</span>
+          <div class="tune-row">
+            <div class="meta"><div class="t">Parallel downloads</div>
+              <div class="d">Upper bound; mirrors self-throttle underneath.</div></div>
+            <input type="number" class="number-input" id="download_parallel" min="1" max="32" />
+          </div>
+          <div class="tune-row">
+            <div class="meta"><div class="t">Parallel imports</div>
+              <div class="d">How many maps to hand lazer at once.</div></div>
+            <input type="number" class="number-input" id="import_parallel" min="1" max="8" />
+          </div>
+          <div class="tune-row">
+            <div class="meta"><div class="t">Import delay (ms)</div>
+              <div class="d">Min gap between import calls.</div></div>
+            <input type="number" class="number-input" id="import_delay_ms" min="0" max="5000" step="50" />
+          </div>
+        </div>
+
+        <div class="card">
+          <span class="kicker" style="display:block;margin-bottom:12px;">// paths</span>
+          <label class="field-label" for="osu_binary">osu!lazer binary</label>
+          <div class="input-row" style="margin-bottom:14px;">
+            <input id="osu_binary" class="text-input mono" placeholder="(auto-detected)" />
+            <button class="btn" id="browse-osu">Browse…</button>
+          </div>
+          <label class="field-label" for="lazer_realm_path">client.realm</label>
+          <div class="input-row" style="margin-bottom:14px;">
+            <input id="lazer_realm_path" class="text-input mono" placeholder="(auto-detected)" />
+            <button class="btn" id="browse-realm">Browse…</button>
+          </div>
+          <label class="field-label" for="cm_cli_command">Collection Manager CLI command</label>
+          <input id="cm_cli_command" class="text-input mono" placeholder="(auto-detected)" />
+          <label class="field-label" for="custom_mirrors" style="margin-top:14px;">Extra mirrors (one URL template per line, {id})</label>
+          <textarea id="custom_mirrors" class="hero-input" style="min-height:64px;font-size:12.5px;"
+            placeholder="https://example.com/d/{id}"></textarea>
+        </div>
+
+        <div class="go-row">
+          <button class="btn btn-primary" id="save-settings">Save settings</button>
+          <span class="dim mono" id="save-status" style="font-size:12px;"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ========================= BOTTOM DOCK ========================= -->
+  <div class="dock" id="dock">
+    <div class="dock-row">
+      <span class="dock-pulse"></span>
+      <div class="dock-info">
+        <div class="dock-title" id="dock-title">Idle</div>
+        <div class="dock-file mono" id="dock-file"></div>
+      </div>
+      <span class="dock-count num" id="dock-count"></span>
+      <button class="btn btn-ghost" id="dock-cancel" style="padding:8px 16px;">Cancel</button>
+    </div>
+    <div class="progress"><div class="fill" id="dock-fill"></div></div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <canvas id="confetti" class="hidden"></canvas>
+
+  <script src="app.js"></script>
+</body>
+</html>

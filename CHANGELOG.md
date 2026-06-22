@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] — 2026-06-22
+
+The complete redesign. The Qt UI is gone; the app now renders an HTML/CSS/JS
+frontend in a native [pywebview](https://pywebview.flowlib.org/) window, built
+in the **R3D "Cherry"** design system. The proven download engine is unchanged
+under the hood — it was simply decoupled from Qt so it can drive the new UI.
+
+### Changed
+
+- **Brand-new interface (R3D "Cherry").** Warm near-black theme, Big Shoulders
+  display type, JetBrains Mono technical labelling, cherry-red accents and
+  glow. Dark by default with a working, persisted **light toggle** (applied
+  before first paint, no flash).
+- **Effortless three-step flow.** Paste a link/ID → pick a collection → hit
+  Download. The main screen is just those three things; every other option
+  moved to the **Settings** tab.
+- **Auto-everything.** The osu! folder is auto-scanned for existing lazer
+  collections (no Refresh button), and the osu!lazer binary, `client.realm`,
+  Collection Manager CLI, and output folder all auto-detect on launch.
+
+### Added
+
+- **Live poster previews.** Pasted collections render as cherry-duotone gig
+  posters — cover art, collection name in huge condensed caps, `// N maps`.
+- **Persistent download dock** with aggregate progress, current-file ticker,
+  live counts, and a pulse while active.
+- **Toasts** for scan/complete/error and a confetti finish on success.
+- Activity log with colour-coded lines; "Open output folder" shortcut.
+
+### Removed
+
+- **PyQt6 dependency** and the entire Qt UI layer (`MainWindow`,
+  `DownloadWorker` Qt signals, the QSS theme). Replaced by `pywebview` +
+  `web/` assets and a Qt-free `Downloader` orchestrator.
+
 ## [0.9.1] — 2026-06-06
 
 The "fix the failed imports + add mirrors" release.

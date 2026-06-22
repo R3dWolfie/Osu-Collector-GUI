@@ -22,6 +22,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -30,32 +31,6 @@ from pathlib import Path
 from typing import Iterable
 
 import requests
-from PyQt6.QtCore import QObject, QThread, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QScrollArea,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QSizePolicy,
-    QSpinBox,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +38,7 @@ from PyQt6.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "0.9.1"
+APP_VERSION = "1.0.0"
 APP_AUTHOR = "Red"
 
 
@@ -133,208 +108,6 @@ CM_CLI_RELEASE_URL = (
     "https://github.com/Piotrekol/CollectionManager/releases/latest/"
     "download/CollectionManager-CLI.zip"
 )
-
-# ---------------------------------------------------------------------------
-# Theme — v0.7.0 Cherry red on dark base
-# ---------------------------------------------------------------------------
-#
-# Applied once via QApplication.setStyleSheet in main(). Colors:
-#   accent (Cherry):  #e3344f → #ffa15f gradient on progress + primary button
-#   surface:          #1e1e26 (window body) / #16161c (title-bar strip)
-#   fields:           #2a2a35 with #3a3a48 borders / #5a5a68 on focus
-#   text:             #e8e8ec primary / #9aa0a6 muted / #7d8090 meta
-#   semantic:         #5dd56e success (skipped) / #e3344f errors
-
-# Sizing uses pt (not px) for fonts so text stays a consistent *physical*
-# size across 1080p and 4K — the root cause of the old "doesn't scale"
-# complaint was px fonts that rendered tiny on high-DPI displays. Paddings
-# and radii stay in px; Qt scales those by the device pixel ratio under the
-# PassThrough rounding policy set in main().
-QSS = """
-QWidget {
-    background-color: #131419;
-    color: #e9eaf0;
-    font-family: "Segoe UI", "SF Pro Text", -apple-system, "Cantarell",
-                 "Noto Sans", sans-serif;
-    font-size: 10pt;
-}
-
-QLabel { background: transparent; color: #e9eaf0; }
-QLabel#appTitle { font-size: 16pt; font-weight: 800; color: #ffffff; }
-QLabel#appSubtitle { font-size: 9pt; color: #6f7388; }
-QLabel[role="field"] {
-    color: #8b8fa3;
-    font-size: 8pt;
-    font-weight: 700;
-    letter-spacing: 0.7px;
-    text-transform: uppercase;
-}
-QLabel[role="section"] {
-    color: #e3344f;
-    font-size: 8.5pt;
-    font-weight: 800;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-}
-QLabel[role="status"] { color: #8b8fa3; font-size: 9pt; }
-
-/* Cards — the main grouping surface. Children paint transparent so the
-   card colour shows through (the global QWidget rule would otherwise tile
-   the window colour over every sub-widget). */
-QFrame#card {
-    background-color: #1b1c25;
-    border: 1px solid #282a38;
-    border-radius: 12px;
-}
-QFrame#card > QLabel,
-QFrame#card > QWidget > QLabel { background: transparent; }
-
-QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {
-    background-color: #23252f;
-    border: 1px solid #323545;
-    border-radius: 8px;
-    padding: 8px 11px;
-    color: #e9eaf0;
-    selection-background-color: #e3344f;
-    selection-color: white;
-}
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {
-    border-color: #e3344f;
-}
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #3e4255; }
-QLineEdit::placeholder, QPlainTextEdit::placeholder { color: #5a5e72; }
-
-/* Combo popup themed; the down-arrow + spinbox arrows keep Qt's native
-   rendering — every QSS override of those sub-controls renders blank or
-   inconsistent across Linux/Windows/macOS. */
-QComboBox QAbstractItemView {
-    background-color: #23252f;
-    border: 1px solid #323545;
-    border-radius: 8px;
-    color: #e9eaf0;
-    padding: 4px;
-    selection-background-color: #e3344f;
-    selection-color: white;
-    outline: none;
-}
-
-QPushButton, QToolButton {
-    background-color: #262835;
-    border: 1px solid #343748;
-    border-radius: 8px;
-    padding: 9px 16px;
-    color: #e9eaf0;
-    font-weight: 600;
-}
-QPushButton:hover, QToolButton:hover {
-    background-color: #2e3140;
-    border-color: #464a60;
-}
-QPushButton:pressed, QToolButton:pressed { background-color: #202230; }
-QPushButton:disabled, QToolButton:disabled {
-    color: #565a6e;
-    background-color: #1c1d27;
-    border-color: #282a38;
-}
-
-/* Primary call-to-action — the cherry-red brand gradient. */
-QPushButton#primaryBtn {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                      stop:0 #e3344f, stop:1 #ff6a47);
-    border: none;
-    color: white;
-    font-size: 10.5pt;
-    font-weight: 800;
-    padding: 12px 22px;
-    border-radius: 9px;
-}
-QPushButton#primaryBtn:hover {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                      stop:0 #ec4258, stop:1 #ff7a56);
-}
-QPushButton#primaryBtn:pressed {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                      stop:0 #c92d44, stop:1 #e85b3e);
-}
-QPushButton#primaryBtn:disabled {
-    background-color: #3a2730; color: #8a6f78;
-}
-
-/* Cancel / destructive secondary. */
-QPushButton#dangerBtn {
-    background-color: transparent;
-    border: 1px solid #5e3640;
-    color: #ff8ba0;
-    font-weight: 700;
-    padding: 12px 22px;
-}
-QPushButton#dangerBtn:hover { background-color: #2a1a20; border-color: #7a4450; }
-
-/* Square-ish icon buttons (browse "…", refresh). */
-QToolButton#iconBtn {
-    padding: 8px 10px;
-    min-width: 18px;
-    font-weight: 700;
-    color: #b8bccd;
-}
-
-QCheckBox {
-    background: transparent;
-    color: #c7cbd9;
-    spacing: 9px;
-    font-size: 9.5pt;
-    padding: 3px 0;
-}
-/* QCheckBox::indicator kept native — QSS overrides drop the checkmark
-   glyph on most platforms. */
-
-QProgressBar {
-    background-color: #23252f;
-    border: none;
-    border-radius: 5px;
-    min-height: 9px;
-    max-height: 9px;
-    text-align: center;
-    color: transparent;
-}
-QProgressBar::chunk {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                      stop:0 #e3344f, stop:1 #ffa15f);
-    border-radius: 5px;
-}
-
-QPlainTextEdit#logBox {
-    background-color: #0c0d12;
-    border: 1px solid #23252f;
-    border-radius: 9px;
-    padding: 10px 12px;
-    color: #98a0b8;
-    font-family: "Cascadia Code", "SF Mono", "Consolas",
-                 "DejaVu Sans Mono", monospace;
-    font-size: 9pt;
-}
-
-QToolButton#advancedExpander {
-    background: transparent;
-    border: 1px solid #282a38;
-    border-radius: 8px;
-    color: #8b8fa3;
-    font-size: 9.5pt;
-    font-weight: 600;
-    padding: 9px 12px;
-    text-align: left;
-}
-QToolButton#advancedExpander:hover { color: #e9eaf0; border-color: #343748; }
-QToolButton#advancedExpander:checked { color: #e9eaf0; }
-
-QScrollBar:vertical { background: transparent; width: 9px; margin: 0; }
-QScrollBar::handle:vertical {
-    background: #343748; border-radius: 4px; min-height: 24px;
-}
-QScrollBar::handle:vertical:hover { background: #464a60; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-"""
 
 # ---------------------------------------------------------------------------
 # osu!collector API client
@@ -1602,22 +1375,36 @@ class DownloadJob:
                                                 # adaptive caps govern the rest
 
 
-class DownloadWorker(QObject):
-    """Performs the actual downloads on a background QThread."""
+class Downloader:
+    """Performs the actual downloads on a background thread."""
 
-    log = pyqtSignal(str)
-    collection_started = pyqtSignal(int, int, str, int)  # idx, total, name, beatmap_count
-    beatmap_progress = pyqtSignal(int, int)              # current, total
-    collection_finished = pyqtSignal(int, int, int)      # idx, ok, total
-    batch_finished = pyqtSignal(int, int)                # ok_collections, total_collections
-    error = pyqtSignal(str)
-    # Asks the GUI thread to put up a "did imports finish?" dialog and
-    # wait for the user before we proceed with the destructive merge.
-    # Payload is the number of import calls we issued during the batch.
-    awaiting_import_confirmation = pyqtSignal(int)
+    # ---- event emit helpers (these replace the old pyqtSignals) ----
+    def _log(self, line: str) -> None:
+        self._emit("log", {"line": line})
 
-    def __init__(self, job: DownloadJob) -> None:
-        super().__init__()
+    def _error(self, message: str) -> None:
+        self._emit("error", {"message": message})
+
+    def _beatmap_progress(self, current: int, total: int) -> None:
+        self._emit("beatmap_progress", {"current": current, "total": total})
+
+    def _collection_started(self, idx: int, total: int, name: str,
+                            n_sets: int) -> None:
+        self._emit("collection_started",
+                   {"idx": idx, "total": total, "name": name, "n_sets": n_sets})
+
+    def _collection_finished(self, idx: int, ok: int, total: int) -> None:
+        self._emit("collection_finished",
+                   {"idx": idx, "ok": ok, "total": total})
+
+    def _awaiting_import(self, n: int) -> None:
+        self._emit("awaiting_import_confirmation", {"n": n})
+
+    def _batch_finished(self, ok: int, total: int) -> None:
+        self._emit("batch_finished", {"ok": ok, "total": total})
+
+    def __init__(self, job: DownloadJob, emit) -> None:
+        self._emit = emit
         self.job = job
         self._cancelled = False
         self.api = OsuCollectorClient()
@@ -1722,7 +1509,7 @@ class DownloadWorker(QObject):
         # path no-ops silently — maps download fine but never reach the
         # game, with no clue why.
         if self.job.auto_import and not self.importer.binary:
-            self.log.emit(
+            self._log(
                 "[lazer] WARNING: auto-import is ON but no osu!lazer "
                 "executable was found. Downloaded maps will NOT be imported "
                 "into the game. Set the 'osu!lazer binary' path in the "
@@ -1732,7 +1519,7 @@ class DownloadWorker(QObject):
 
         for idx, cid in enumerate(self.job.collection_ids, 1):
             if self._cancelled:
-                self.log.emit("[cancelled]")
+                self._log("[cancelled]")
                 break
 
             # The probe and .osdb generation both need per-beatmap details
@@ -1745,14 +1532,14 @@ class DownloadWorker(QObject):
             try:
                 info = self.api.fetch_collection(cid, with_beatmap_details=need_details)
             except Exception as e:
-                self.error.emit(f"Collection {cid}: {e}")
+                self._error(f"Collection {cid}: {e}")
                 continue
 
-            self.log.emit(
+            self._log(
                 f"\n=== Collection {idx}/{total}: {info.name} "
                 f"by {info.uploader} ({len(info.beatmapset_ids)} sets) ==="
             )
-            self.collection_started.emit(idx, total, info.name, len(info.beatmapset_ids))
+            self._collection_started(idx, total, info.name, len(info.beatmapset_ids))
 
             safe_name = _safe_filename(info.name)
             col_dir = self.job.output_dir / f"{info.id} - {safe_name}"
@@ -1763,7 +1550,7 @@ class DownloadWorker(QObject):
             probe_md5_map: dict[int, str] = {}
             if self._probe_enabled_for_job() and info.beatmaps and not self._cancelled:
                 try:
-                    self.log.emit(
+                    self._log(
                         f"  [probe] querying lazer for {len(info.beatmaps)} beatmap IDs..."
                     )
                     cm = CmCliRunner(CmCliConfig(
@@ -1779,13 +1566,13 @@ class DownloadWorker(QObject):
                         b.set_id for b in info.beatmaps
                         if b.beatmap_id in probe.resolved and b.set_id
                     }
-                    self.log.emit(
+                    self._log(
                         f"  [probe] lazer has {len(probe.resolved)}/{len(info.beatmaps)} maps; "
                         f"skipping {len(skipped_set_ids)}/{len(info.beatmapset_ids)} sets"
                     )
                 except Exception as e:
                     # Fail-open: probe failures cost bandwidth, not data.
-                    self.log.emit(f"  [probe] failed: {e} — proceeding without dedup")
+                    self._log(f"  [probe] failed: {e} — proceeding without dedup")
 
             ok = 0
             failed = 0
@@ -1798,9 +1585,9 @@ class DownloadWorker(QObject):
                     OsdbWriter.write(osdb_path, info,
                                      prefer_md5_map=probe_md5_map or None)
                     self._generated_osdb_files.append(osdb_path)
-                    self.log.emit(f"  [.osdb] {osdb_path.name}")
+                    self._log(f"  [.osdb] {osdb_path.name}")
                 except Exception as e:
-                    self.log.emit(f"  [.osdb error] {e}")
+                    self._log(f"  [.osdb error] {e}")
 
             # --- download beatmaps in parallel ---
             if self.job.download_beatmaps and info.beatmapset_ids:
@@ -1818,8 +1605,8 @@ class DownloadWorker(QObject):
                     if skipped_set_ids:
                         done = len(skipped_set_ids & set(set_ids))
                         skipped = done
-                        self.beatmap_progress.emit(done, len(set_ids))
-                        self.log.emit(
+                        self._beatmap_progress(done, len(set_ids))
+                        self._log(
                             f"  [skip] {skipped} set(s) already imported in lazer"
                         )
                     for fut in as_completed(futures):
@@ -1828,27 +1615,27 @@ class DownloadWorker(QObject):
                                 f.cancel()
                             break
                         done += 1
-                        self.beatmap_progress.emit(done, len(set_ids))
+                        self._beatmap_progress(done, len(set_ids))
                         sid, path, err = fut.result()
                         if err:
                             failed += 1
-                            self.log.emit(f"  [error {sid}: {err}]")
+                            self._log(f"  [error {sid}: {err}]")
                             continue
                         if path is None:
                             failed += 1
-                            self.log.emit(f"  [skip {sid}: not on mirror]")
+                            self._log(f"  [skip {sid}: not on mirror]")
                             continue
                         ok += 1
-                        self.log.emit(f"  [{done}/{len(set_ids)}] {path.name}")
+                        self._log(f"  [{done}/{len(set_ids)}] {path.name}")
                         self._maybe_import(path)
             else:
                 # No beatmap download requested. Still emit progress so the
                 # bar finishes.
-                self.beatmap_progress.emit(len(info.beatmapset_ids),
+                self._beatmap_progress(len(info.beatmapset_ids),
                                            max(len(info.beatmapset_ids), 1))
 
-            self.collection_finished.emit(idx, ok, len(info.beatmapset_ids))
-            self.log.emit(
+            self._collection_finished(idx, ok, len(info.beatmapset_ids))
+            self._log(
                 f"=== {info.name}: {ok} ok, {failed} failed, "
                 f"{skipped} skipped (already imported) ==="
             )
@@ -1865,13 +1652,13 @@ class DownloadWorker(QObject):
             try:
                 self._merge_into_lazer()
             except Exception as e:
-                self.error.emit(f"lazer collection merge failed: {e}")
+                self._error(f"lazer collection merge failed: {e}")
         elif self.job.auto_import and self._import_calls_issued > 0 and not self._cancelled:
             # No merge step to gate cleanup behind, but we still need
             # the user to confirm imports finished before deleting the
             # source files lazer might still be reading.
             self._continue_merge_event.clear()
-            self.awaiting_import_confirmation.emit(self._import_calls_issued)
+            self._awaiting_import(self._import_calls_issued)
             self._continue_merge_event.wait(timeout=3600)
 
         # --- cleanup per-collection folders ---
@@ -1879,9 +1666,9 @@ class DownloadWorker(QObject):
             try:
                 self._cleanup_collection_folders()
             except Exception as e:
-                self.log.emit(f"[cleanup] failed: {e}")
+                self._log(f"[cleanup] failed: {e}")
 
-        self.batch_finished.emit(ok_collections, total)
+        self._batch_finished(ok_collections, total)
 
     # ---- post-import cleanup ---------------------------------------------
 
@@ -1931,7 +1718,7 @@ class DownloadWorker(QObject):
                     contains_realm = True
                     break
                 if contains_realm:
-                    self.log.emit(
+                    self._log(
                         f"[cleanup] SKIP {entry.name}: contains a .realm file"
                     )
                     kept += 1
@@ -1940,10 +1727,10 @@ class DownloadWorker(QObject):
                 shutil.rmtree(entry)
                 deleted += 1
             except OSError as e:
-                self.log.emit(f"[cleanup] couldn't remove {entry.name}: {e}")
+                self._log(f"[cleanup] couldn't remove {entry.name}: {e}")
                 kept += 1
 
-        self.log.emit(
+        self._log(
             f"[cleanup] removed {deleted} collection folder(s), kept {kept} other entr(ies)"
         )
 
@@ -1955,7 +1742,7 @@ class DownloadWorker(QObject):
         # this guard, the expensive snapshot+export through wine runs even
         # when there's nothing to merge — looks like the GUI hangs.
         if not self._generated_osdb_files:
-            self.log.emit("[lazer] no new collections generated this run — skipping merge")
+            self._log("[lazer] no new collections generated this run — skipping merge")
             return
 
         if not self.job.cm_cli_command:
@@ -1970,21 +1757,21 @@ class DownloadWorker(QObject):
         # the merge will kill lazer mid-import and lose data. Lazer
         # doesn't expose a "queue empty" signal, so we ask the user.
         if self._import_calls_issued > 0:
-            self.log.emit(
+            self._log(
                 f"\n[lazer] {self._import_calls_issued} auto-import call(s) "
                 "were issued. Waiting for user confirmation that osu!lazer "
                 "has finished importing them before touching client.realm..."
             )
             self._continue_merge_event.clear()
-            self.awaiting_import_confirmation.emit(self._import_calls_issued)
+            self._awaiting_import(self._import_calls_issued)
             # Long but bounded wait — 1h cap so a forgotten dialog
             # doesn't leak the worker thread forever.
             self._continue_merge_event.wait(timeout=3600)
             if self._cancelled:
-                self.log.emit("[lazer] cancelled while waiting for import "
+                self._log("[lazer] cancelled while waiting for import "
                               "confirmation")
                 return
-            self.log.emit("[lazer] user confirmed; proceeding with merge")
+            self._log("[lazer] user confirmed; proceeding with merge")
         if not self.job.lazer_realm_path:
             raise RuntimeError("lazer client.realm path not configured.")
         realm_path = Path(self.job.lazer_realm_path).expanduser()
@@ -2005,7 +1792,7 @@ class DownloadWorker(QObject):
         # Same wine-sandbox constraint as _fetch_existing_collections —
         # CM CLI can only write to paths the wine flatpak can see, which
         # in practice means the realm's own parent dir.
-        self.log.emit("\n[lazer] snapshotting realm and exporting existing collections...")
+        self._log("\n[lazer] snapshotting realm and exporting existing collections...")
         tmp_dir = realm_path.parent / ".oc-gui-tmp"
         tmp_dir.mkdir(exist_ok=True)
         snapshot_realm = tmp_dir / "snapshot.realm"
@@ -2050,7 +1837,7 @@ class DownloadWorker(QObject):
                 f"{e}\nFile: {existing_osdb} ({existing_osdb.stat().st_size} bytes)"
             ) from e
 
-        self.log.emit(f"[lazer] {len(existing)} existing collection(s) loaded")
+        self._log(f"[lazer] {len(existing)} existing collection(s) loaded")
 
         # Belt-and-braces sanity check: if the realm is non-trivial in size
         # but we got back zero collections, something is wrong — refuse to
@@ -2073,15 +1860,15 @@ class DownloadWorker(QObject):
         new_collections: list[CollectionInfo] = []
         for f in self._generated_osdb_files:
             if not f.exists():
-                self.log.emit(f"[lazer] WARN: generated {f.name} is missing")
+                self._log(f"[lazer] WARN: generated {f.name} is missing")
                 continue
             try:
                 new_collections.extend(OsdbReader.read(f))
             except Exception as e:
-                self.log.emit(f"[lazer] skip unreadable {f.name}: {e}")
+                self._log(f"[lazer] skip unreadable {f.name}: {e}")
 
         if not new_collections:
-            self.log.emit("[lazer] no new collections to merge — skipping")
+            self._log("[lazer] no new collections to merge — skipping")
             return
 
         # If the user picked a single target collection name, rewrite ALL
@@ -2090,7 +1877,7 @@ class DownloadWorker(QObject):
         # collection.
         if self.job.target_collection_name:
             target = self.job.target_collection_name
-            self.log.emit(
+            self._log(
                 f"[lazer] funneling all new maps into collection {target!r}"
             )
             for c in new_collections:
@@ -2100,7 +1887,7 @@ class DownloadWorker(QObject):
             existing, new_collections,
             on_name_collision="merge",
         )
-        self.log.emit(
+        self._log(
             f"[lazer] merged result: {len(merged)} collection(s) "
             f"(existing {len(existing)} + new {len(new_collections)} → {len(merged)})"
         )
@@ -2114,9 +1901,9 @@ class DownloadWorker(QObject):
         )
         try:
             shutil.copy2(realm_path, backup)
-            self.log.emit(f"[lazer] backed up realm to {backup.name}")
+            self._log(f"[lazer] backed up realm to {backup.name}")
         except OSError as e:
-            self.log.emit(f"[lazer] WARNING: couldn't back up realm: {e}")
+            self._log(f"[lazer] WARNING: couldn't back up realm: {e}")
 
         # Lazer must NOT be running while CM rewrites client.realm. We
         # already killed it at the start of this method; this second
@@ -2125,9 +1912,9 @@ class DownloadWorker(QObject):
         if self._lazer_kill_if_running():
             was_running = True
         try:
-            self.log.emit("[lazer] writing merged collections back to realm...")
+            self._log("[lazer] writing merged collections back to realm...")
             cm.import_osdb_to_realm(merged_osdb, realm_path)
-            self.log.emit("[lazer] done.")
+            self._log("[lazer] done.")
         finally:
             try:
                 shutil.rmtree(tmp_dir)
@@ -2203,7 +1990,7 @@ class DownloadWorker(QObject):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
-        self.log.emit(
+        self._log(
             f"[lazer] terminating {len(targets)} osu!lazer process(es) "
             "and waiting for them to exit cleanly..."
         )
@@ -2221,7 +2008,7 @@ class DownloadWorker(QObject):
         # Wait up to 15 s for graceful shutdown.
         gone, alive = psutil.wait_procs(targets, timeout=15)
         for p in alive:
-            self.log.emit(f"[lazer] PID {p.pid} ignored SIGTERM, sending SIGKILL")
+            self._log(f"[lazer] PID {p.pid} ignored SIGTERM, sending SIGKILL")
             try:
                 p.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -2248,13 +2035,13 @@ class DownloadWorker(QObject):
                 if stale.exists():
                     try:
                         stale.unlink()
-                        self.log.emit(f"[lazer] removed stale {stale.name}")
+                        self._log(f"[lazer] removed stale {stale.name}")
                     except OSError:
                         pass
         except (TypeError, OSError):
             pass
 
-        self.log.emit("[lazer] all instances stopped")
+        self._log("[lazer] all instances stopped")
         return True
 
     def _lazer_relaunch(self) -> None:
@@ -2263,13 +2050,13 @@ class DownloadWorker(QObject):
         # heuristics needed.
         binary = self._discovered_lazer_exe or self.importer.binary
         if not binary:
-            self.log.emit(
+            self._log(
                 "[lazer] no binary path discovered or configured — "
                 "skipping relaunch. Set 'osu!lazer binary' in the Tuning "
                 "section if you want auto-restart to work."
             )
             return
-        self.log.emit(f"[lazer] relaunching {binary}")
+        self._log(f"[lazer] relaunching {binary}")
         # Save the actual binary into the importer for any subsequent
         # operations in this run.
         self.importer.binary = binary
@@ -2281,9 +2068,9 @@ class DownloadWorker(QObject):
             else:
                 kwargs["start_new_session"] = True
             subprocess.Popen([str(self.importer.binary)], **kwargs)
-            self.log.emit("[lazer] relaunched osu!lazer")
+            self._log("[lazer] relaunched osu!lazer")
         except OSError as e:
-            self.log.emit(f"[lazer] relaunch failed: {e}")
+            self._log(f"[lazer] relaunch failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2312,1177 +2099,527 @@ def target_combo_no_merge_label() -> str:
 
 
 # ---------------------------------------------------------------------------
-# GUI
+# Web UI bridge (pywebview) + entry point
 # ---------------------------------------------------------------------------
+#
+# The Qt UI was retired in v1.0.0 in favour of an HTML/CSS/JS frontend (the
+# "Cherry" design system) rendered in a native pywebview window. The proven
+# download engine above is unchanged; this layer just wires the frontend to
+# it. Frontend → Python calls land on JsApi's public methods (exposed by
+# pywebview as window.pywebview.api.*). Python → frontend events are pushed
+# via window.evaluate_js("window.ocOnEvent({...})").
 
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}")
-        # Roomy default; the layout is fully resizable — the log card soaks
-        # up any extra vertical space so there's never dead air or squish.
-        self.resize(780, 760)
-        self.setMinimumSize(560, 600)
+def _web_dir() -> Path:
+    """Locate the bundled frontend, working both from source and from a
+    PyInstaller one-file build (which unpacks data under sys._MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base) / "web"
+    return Path(__file__).resolve().parent / "web"
 
-        self.thread: QThread | None = None
-        self.worker: DownloadWorker | None = None
-        self.settings = self._load_settings()
 
-        self._build_ui()
+WEB_DIR = _web_dir()
 
-    # ----- UI construction -------------------------------------------------
+# Module-level picker sentinels (these used to live on MainWindow).
+DEFAULT_TARGET = target_combo_default_label()
+NEW_TARGET = "+ Create new collection..."
 
-    def _build_ui(self) -> None:
-        # Single resizable page. The download inputs sit in a card up top;
-        # the log card at the bottom carries the vertical stretch so the
-        # window resizes cleanly with no dead space and no squish. Advanced
-        # is an inline collapsible card — opening it borrows space from the
-        # log rather than forcing the window to grow.
 
-        # Everything lives inside a scroll area: when the window is tall
-        # enough the log card stretches to fill it; when it's too short
-        # (e.g. Advanced open on a small window) the page scrolls instead of
-        # squishing widgets on top of each other.
-        scroll = QScrollArea()
-        scroll.setObjectName("rootScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setCentralWidget(scroll)
+def _load_settings() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
-        central = QWidget()
-        scroll.setWidget(central)
-        self._scroll_content = central
-        root = QVBoxLayout(central)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(12)
 
-        # --- Header ---
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        title = QLabel("osu!collector")
-        title.setObjectName("appTitle")
-        subtitle = QLabel(f"downloader · v{APP_VERSION}")
-        subtitle.setObjectName("appSubtitle")
-        header.addWidget(title)
-        header.addWidget(subtitle, alignment=Qt.AlignmentFlag.AlignBottom)
-        header.addStretch(1)
-        root.addLayout(header)
+def _save_settings(data: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
-        # --- Download card ---
-        card = self._make_card()
-        cv = card.layout()
 
-        cv.addWidget(self._field_label("Collection IDs or URLs"))
-        self.ids_edit = QPlainTextEdit()
-        self.ids_edit.setPlaceholderText(
-            "Paste osu!collector IDs or links — one per line, "
-            "or comma / space separated"
-        )
-        self.ids_edit.setMinimumHeight(56)
-        self.ids_edit.setMaximumHeight(84)
-        self.ids_edit.textChanged.connect(self._update_start_enabled)
-        cv.addWidget(self.ids_edit)
+def _normalize_cm(value) -> list[str]:
+    """Coerce a CM CLI command (str from the UI, or list from disk) to argv."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    s = str(value).strip()
+    if not s:
+        return []
+    try:
+        return shlex.split(s)
+    except ValueError:
+        return s.split()
 
-        # Output folder
-        cv.addWidget(self._field_label("Output folder"))
-        self.dir_edit = QLineEdit(self.settings.get(
-            "last_output_dir", str(Path.home() / "osu-collections")
-        ))
-        self.dir_browse_btn = self._icon_button("…", self._on_browse,
-                                                "Choose output folder")
-        cv.addLayout(self._input_row(self.dir_edit, self.dir_browse_btn))
 
-        # Add-to picker + refresh
-        cv.addWidget(self._field_label("Add maps to osu!lazer collection"))
-        self.target_combo = QComboBox()
-        self.target_combo.setEditable(False)
-        # Don't auto-grow to the longest collection name — clamp the width
-        # so a long name can't blow out the layout.
-        self.target_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
-        self.target_combo.setMinimumContentsLength(18)
-        self._reset_target_combo()
-        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
-        self.refresh_collections_btn = self._icon_button(
-            "⟳", self._on_refresh_collections,
-            "Load your existing osu!lazer collections from client.realm "
-            "(via Collection Manager CLI)."
-        )
-        cv.addLayout(self._input_row(self.target_combo,
-                                     self.refresh_collections_btn))
+def _parse_ids(text: str) -> list[int]:
+    """Extract osu!collector collection IDs from free-form text.
 
-        # New-collection-name row (only shown for "Create new…")
-        self.new_name_label = self._field_label("New collection name")
-        self.new_name_label.setVisible(False)
-        cv.addWidget(self.new_name_label)
-        self.new_name_edit = QLineEdit()
-        self.new_name_edit.setPlaceholderText("Name of the new collection")
-        self.new_name_edit.setText(self.settings.get("new_collection_name", ""))
-        self.new_name_edit.setVisible(False)
-        cv.addWidget(self.new_name_edit)
+    Accepts bare numeric IDs and full /collections/<id> URLs, separated by
+    newlines, commas, or whitespace. Order-preserving and de-duplicated so a
+    user pasting the same link twice doesn't download it twice.
+    """
+    ids: list[int] = []
+    for token in re.split(r"[\s,]+", text or ""):
+        token = token.strip()
+        if not token:
+            continue
+        m = re.search(r"/collections/(\d+)", token)
+        if m:
+            ids.append(int(m.group(1)))
+        elif token.isdigit():
+            ids.append(int(token))
+    seen: set[int] = set()
+    out: list[int] = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
 
-        # Parallelism spinboxes
-        spin_row = QHBoxLayout()
-        spin_row.setSpacing(14)
-        self.download_parallel_spin = QSpinBox()
-        self.download_parallel_spin.setRange(1, 32)
-        self.download_parallel_spin.setValue(int(self.settings.get("download_parallel", DOWNLOAD_PARALLEL)))
-        self.download_parallel_spin.setToolTip(
-            "Upper bound on simultaneous downloads. Each mirror is throttled "
-            "adaptively underneath this, so it's safe to leave high — the app "
-            "speeds up until a mirror pushes back, then backs off that mirror."
-        )
-        spin_row.addLayout(self._labeled("Parallel downloads",
-                                         self.download_parallel_spin), stretch=1)
-        self.import_parallel_spin = QSpinBox()
-        self.import_parallel_spin.setRange(1, 8)
-        self.import_parallel_spin.setValue(int(self.settings.get("import_parallel", 1)))
-        self.import_parallel_spin.setToolTip("How many imports to hand osu!lazer at once.")
-        spin_row.addLayout(self._labeled("Parallel imports",
-                                         self.import_parallel_spin), stretch=1)
-        cv.addLayout(spin_row)
 
-        root.addWidget(card)
+def _autodetect_paths() -> dict:
+    """Best-effort detection of the three integration paths so the user
+    never has to configure anything for the common case."""
+    realm = _default_lazer_realm_path()
+    realm_ok = False
+    try:
+        realm_ok = realm.exists()
+    except OSError:
+        realm_ok = False
+    osu_bin = OsuLazerImporter._locate_binary()
+    cm = CmCliRunner.autodetect()
+    return {
+        "realm_path": str(realm) if realm_ok else "",
+        "realm_detected": realm_ok,
+        "osu_binary": str(osu_bin) if osu_bin else "",
+        "osu_detected": bool(osu_bin),
+        "cm_cli_command": shlex.join(cm.command) if cm else "",
+        "cm_detected": cm is not None,
+    }
 
-        # --- Action row: Start/Cancel (swap) + Export ---
-        action_row = QHBoxLayout()
-        action_row.setSpacing(10)
 
-        self.start_btn = QPushButton("Start download")
-        self.start_btn.setObjectName("primaryBtn")
-        self.start_btn.clicked.connect(self._on_start)
-        self.start_btn.setEnabled(False)
-        action_row.addWidget(self.start_btn, stretch=2)
+def _fetch_existing_collections(
+    cm_cli_command: list[str], realm_path: Path,
+) -> list[CollectionInfo]:
+    """Run CM CLI to export client.realm to a temp .osdb and parse it.
 
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setObjectName("dangerBtn")
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setVisible(False)
-        action_row.addWidget(self.cancel_btn, stretch=2)
-
-        self.export_btn = QPushButton("Export to .db…")
-        self.export_btn.setToolTip(
-            "Export the collection currently selected above to osu! stable's\n"
-            "native collection.db format (accepted by osu!collector.com,\n"
-            "stable, and lazer). Requires CM CLI + a real lazer collection\n"
-            "picked (not a 'Don't merge' or default sentinel)."
-        )
-        self.export_btn.clicked.connect(self._on_export_collection)
-        action_row.addWidget(self.export_btn, stretch=1)
-        root.addLayout(action_row)
-
-        # --- Status + progress ---
-        self.status_label = QLabel("Ready")
-        self.status_label.setProperty("role", "status")
-        root.addWidget(self.status_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setVisible(False)
-        root.addWidget(self.progress_bar)
-
-        # --- Advanced (collapsible card) ---
-        self.advanced_expander = QToolButton()
-        self.advanced_expander.setObjectName("advancedExpander")
-        self.advanced_expander.setCheckable(True)
-        self.advanced_expander.setText("▸  Advanced settings")
-        self.advanced_expander.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                             QSizePolicy.Policy.Fixed)
-        self.advanced_expander.toggled.connect(self._on_advanced_toggled)
-        root.addWidget(self.advanced_expander)
-
-        self.advanced_container = self._make_card()
-        self._build_advanced(self.advanced_container)
-        self.advanced_container.setVisible(False)
-        root.addWidget(self.advanced_container)
-
-        # --- Log card (carries the vertical stretch) ---
-        log_card = self._make_card()
-        lv = log_card.layout()
-        lv.addWidget(self._field_label("Activity log"))
-        self.log_box = QPlainTextEdit()
-        self.log_box.setObjectName("logBox")
-        self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(96)
-        self.log_box.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                   QSizePolicy.Policy.Expanding)
-        self.log_box.setPlainText(
-            "Ready. Paste a collection ID or URL above and click "
-            "Start download to begin."
-        )
-        lv.addWidget(self.log_box, stretch=1)
-        root.addWidget(log_card, stretch=1)
-
-        # Restore advanced-expanded state from settings.
-        if self.settings.get("advanced_expanded", False):
-            self.advanced_expander.setChecked(True)
-
-        # Sync the new-collection-name field to the restored picker value
-        # (setCurrentIndex during _reset_target_combo runs with signals
-        # blocked, so the handler wouldn't otherwise fire on startup).
-        self._on_target_changed(self.target_combo.currentIndex())
-        self._update_start_enabled()
-        QTimer.singleShot(0, self._sync_scroll_min)
-
-    def _sync_scroll_min(self) -> None:
-        """Pin the scroll content's minimum height to its natural height so
-        the scroll area scrolls (rather than letting QVBoxLayout crush
-        widgets below their preferred size) when the window is too short.
-        Above that height the log card's stretch fills the extra space."""
-        c = self._scroll_content
-        c.setMinimumHeight(c.sizeHint().height())
-
-    # ----- UI building blocks ---------------------------------------------
-
-    @staticmethod
-    def _make_card() -> QFrame:
-        """A rounded surface with an internal vertical layout."""
-        card = QFrame()
-        card.setObjectName("card")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(16, 14, 16, 16)
-        lay.setSpacing(8)
-        return card
-
-    @staticmethod
-    def _field_label(text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setProperty("role", "field")
-        return lbl
-
-    @staticmethod
-    def _input_row(field: QWidget, button: QWidget) -> QHBoxLayout:
-        """A line-edit/combo with a trailing icon button, snug together."""
-        row = QHBoxLayout()
-        row.setSpacing(7)
-        row.addWidget(field, stretch=1)
-        row.addWidget(button)
-        return row
-
-    def _labeled(self, text: str, widget: QWidget) -> QVBoxLayout:
-        """A micro field-label stacked above a widget."""
-        col = QVBoxLayout()
-        col.setSpacing(5)
-        col.addWidget(self._field_label(text))
-        col.addWidget(widget)
-        return col
-
-    @staticmethod
-    def _icon_button(glyph: str, handler, tooltip: str = "") -> QToolButton:
-        btn = QToolButton()
-        btn.setObjectName("iconBtn")
-        btn.setText(glyph)
-        if tooltip:
-            btn.setToolTip(tooltip)
-        btn.clicked.connect(handler)
-        return btn
-
-    def _build_advanced(self, parent: QFrame) -> None:
-        """Build the contents of the collapsible Advanced card."""
-        layout = parent.layout()  # the card's QVBoxLayout
-        layout.setSpacing(7)
-
-        def section(text: str, top: bool = False) -> None:
-            lbl = QLabel(text)
-            lbl.setProperty("role", "section")
-            if not top:
-                lbl.setContentsMargins(0, 8, 0, 0)
-            layout.addWidget(lbl)
-
-        # ---- Paths ----
-        section("Paths", top=True)
-
-        layout.addWidget(self._field_label("Collection Manager CLI command"))
-        _saved_cmd = self.settings.get("cm_cli_command", [])
-        _saved_cmd_text = shlex.join(_saved_cmd) if isinstance(_saved_cmd, list) and _saved_cmd else ""
-        self.cm_cli_edit = QLineEdit(_saved_cmd_text)
-        self.cm_cli_edit.setPlaceholderText("(auto-detect: native CM CLI or wine flatpak)")
-        self.cm_cli_edit.textChanged.connect(self._update_skip_imported_enabled)
-        cm_detect = QPushButton("Auto-detect")
-        cm_detect.clicked.connect(self._on_detect_cm)
-        layout.addLayout(self._input_row(self.cm_cli_edit, cm_detect))
-
-        layout.addWidget(self._field_label("client.realm path"))
-        self.realm_edit = QLineEdit(self.settings.get(
-            "lazer_realm_path", str(_default_lazer_realm_path())
-        ))
-        layout.addLayout(self._input_row(
-            self.realm_edit,
-            self._icon_button("…", self._on_browse_realm, "Locate client.realm"),
-        ))
-
-        layout.addWidget(self._field_label("osu!lazer binary"))
-        self.osu_path_edit = QLineEdit(self.settings.get("osu_binary", ""))
-        self.osu_path_edit.setPlaceholderText("(auto-detect)")
-        layout.addLayout(self._input_row(
-            self.osu_path_edit,
-            self._icon_button("…", self._on_browse_osu, "Locate the osu!lazer executable"),
-        ))
-
-        # ---- Mirrors ----
-        section("Mirrors")
-        layout.addWidget(self._field_label("Extra mirror URLs (one per line)"))
-        self.custom_mirror_edit = QPlainTextEdit(self.settings.get("custom_mirrors", ""))
-        self.custom_mirror_edit.setPlaceholderText(
-            "https://my-mirror.example/d/{id}   —   {id} is the beatmapset id; "
-            "a plain base URL gets /{id} appended. Tried before the built-ins."
-        )
-        self.custom_mirror_edit.setMaximumHeight(64)
-        layout.addWidget(self.custom_mirror_edit)
-        builtins = ", ".join(u.split("//", 1)[1].split("/", 1)[0] for u in
-                             [DEFAULT_MIRROR, *FALLBACK_MIRRORS])
-        hint = QLabel(f"Built-in mirrors: {builtins}")
-        hint.setProperty("role", "status")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        # ---- Behaviour ----
-        section("Behaviour")
-
-        self.auto_import_cb = QCheckBox("Auto-import maps into osu!lazer as they download")
-        self.auto_import_cb.setChecked(bool(self.settings.get("auto_import", True)))
-        layout.addWidget(self.auto_import_cb)
-
-        self.skip_imported_cb = QCheckBox("Skip beatmapsets osu!lazer already has")
-        self.skip_imported_cb.setChecked(bool(self.settings.get("skip_already_imported", True)))
-        layout.addWidget(self.skip_imported_cb)
-
-        self.restart_lazer_cb = QCheckBox("Restart osu!lazer after merging collections")
-        self.restart_lazer_cb.setChecked(bool(self.settings.get("restart_lazer_after", True)))
-        layout.addWidget(self.restart_lazer_cb)
-
-        self.generate_osdb_cb = QCheckBox("Generate .osdb files (export-only)")
-        self.generate_osdb_cb.setChecked(bool(self.settings.get("generate_osdb", False)))
-        layout.addWidget(self.generate_osdb_cb)
-
-        self.consolidate_cb = QCheckBox("Consolidate .osdb files into a db/ subfolder")
-        self.consolidate_cb.setChecked(bool(self.settings.get("consolidate_osdb", False)))
-        layout.addWidget(self.consolidate_cb)
-
-        self.cleanup_cb = QCheckBox("Delete download folders after import")
-        self.cleanup_cb.setChecked(bool(self.settings.get("cleanup_after_import", False)))
-        layout.addWidget(self.cleanup_cb)
-
-        # ---- Tuning + maintenance ----
-        section("Tuning")
-
-        tune_row = QHBoxLayout()
-        tune_row.setSpacing(14)
-        self.import_delay_spin = QSpinBox()
-        self.import_delay_spin.setRange(0, 5000)
-        self.import_delay_spin.setSuffix(" ms")
-        self.import_delay_spin.setSingleStep(50)
-        self.import_delay_spin.setValue(int(self.settings.get("import_delay_ms", 300)))
-        tune_row.addLayout(self._labeled("Import delay", self.import_delay_spin), stretch=1)
-
-        self.recover_realm_btn = QPushButton("Recover realm from backup…")
-        self.recover_realm_btn.clicked.connect(self._on_recover_realm)
-        recover_col = QVBoxLayout()
-        recover_col.setSpacing(5)
-        recover_col.addWidget(self._field_label("Maintenance"))
-        recover_col.addWidget(self.recover_realm_btn)
-        tune_row.addLayout(recover_col, stretch=1)
-        layout.addLayout(tune_row)
-
-        # Keep the skip-imported gating logic alive even though the checkbox
-        # is buried in Advanced (still needs CM CLI to be configured).
-        self._update_skip_imported_enabled()
-
-    # ----- settings persistence -------------------------------------------
-
-    def _load_settings(self) -> dict:
-        try:
-            return json.loads(CONFIG_FILE.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    def _save_settings(self) -> None:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        # Persist cm_cli_command as a list, never a string. The QLineEdit
-        # text is parsed once on save so the canonical form on disk is
-        # quote-safe.
-        cm_text = self.cm_cli_edit.text().strip()
-        cm_list: list[str] = []
-        if cm_text:
+    Snapshots the live realm first (Realm is MVCC, so a file copy is a
+    consistent point-in-time view) so osu!lazer can stay open, and keeps the
+    temp files next to the realm so the wine sandbox can write them.
+    """
+    snapshot = realm_path.parent / f".oc-gui-snapshot-{os.getpid()}.realm"
+    out = realm_path.parent / f".oc-gui-export-{os.getpid()}.osdb"
+    try:
+        shutil.copy2(realm_path, snapshot)
+        cm = CmCliRunner(CmCliConfig(command=list(cm_cli_command), osu_location=None))
+        cm.export_realm_to_osdb(snapshot, out)
+        if not out.exists() or out.stat().st_size == 0:
+            raise RuntimeError(
+                "Collection Manager CLI exited without producing an output "
+                f"file. The wine sandbox may be unable to write to {out.parent}. "
+                "Grant it with:\n"
+                f"  flatpak override --user --filesystem={out.parent} org.winehq.Wine"
+            )
+        return OsdbReader.read(out)
+    finally:
+        for p in (snapshot, out):
             try:
-                cm_list = shlex.split(cm_text)
-            except ValueError:
-                cm_list = cm_text.split()
-        CONFIG_FILE.write_text(json.dumps({
-            "last_output_dir": self.dir_edit.text(),
-            "generate_osdb": self.generate_osdb_cb.isChecked(),
-            "auto_import": self.auto_import_cb.isChecked(),
-            "consolidate_osdb": self.consolidate_cb.isChecked(),
-            "cleanup_after_import": self.cleanup_cb.isChecked(),
-            "import_parallel": self.import_parallel_spin.value(),
-            "download_parallel": self.download_parallel_spin.value(),
-            "import_delay_ms": self.import_delay_spin.value(),
-            "osu_binary": self.osu_path_edit.text(),
-            "custom_mirrors": self.custom_mirror_edit.toPlainText(),
-            "skip_already_imported": self.skip_imported_cb.isChecked(),
-            "cm_cli_command": cm_list,
-            "lazer_realm_path": self.realm_edit.text(),
-            "target_collection": self.target_combo.currentText(),
-            "new_collection_name": self.new_name_edit.text(),
-            "restart_lazer_after": self.restart_lazer_cb.isChecked(),
-            "advanced_expanded": self.advanced_expander.isChecked(),
-        }, indent=2))
+                p.unlink()
+            except OSError:
+                pass
 
-    # ----- event handlers --------------------------------------------------
 
-    def closeEvent(self, event) -> None:    # noqa: N802 (Qt override)
-        # Persist settings on window close so adjustments aren't lost
-        # if the user closes without clicking Start.
+def _consolidate_osdb(out_dir: Path, emit) -> None:
+    """Move any loose .osdb files under out_dir into a single db/ subfolder."""
+    db_dir = out_dir / "db"
+    db_dir.mkdir(exist_ok=True)
+    moved = 0
+    for f in out_dir.rglob("*.osdb"):
         try:
-            self._save_settings()
-        except OSError:
-            pass
-        super().closeEvent(event)
-
-    def _update_start_enabled(self) -> None:
-        self.start_btn.setEnabled(should_enable_start(self.ids_edit.toPlainText()))
-
-    def _on_advanced_toggled(self, checked: bool) -> None:
-        self.advanced_container.setVisible(checked)
-        self.advanced_expander.setText(
-            "▾  Advanced settings" if checked else "▸  Advanced settings"
-        )
-        # Recompute the scroll content's minimum height now that the
-        # Advanced card has shown/hidden, so the page scrolls if needed
-        # instead of squishing. Deferred a tick so the layout has settled.
-        QTimer.singleShot(0, self._sync_scroll_min)
-
-    def _on_export_collection(self) -> None:
-        """Export the picker-selected lazer collection to a single .db file."""
-        # currentData() holds the bare collection name set as userData when
-        # _on_refresh_collections populated the combo. currentText() would
-        # include the " (N maps)" display suffix and never match the realm.
-        target_name = self.target_combo.currentData()
-        if not target_name:
-            self.status_label.setText(
-                "Export: pick a real collection from 'Add to' first "
-                "(click Refresh to load your lazer collections)."
-            )
-            return
-        target_name = str(target_name).strip()
-
-        cm_cli_cmd = self._resolve_cm_cli()
-        if not cm_cli_cmd:
-            self.status_label.setText(
-                "Export: Collection Manager CLI not configured "
-                "(set its path in Advanced → Paths)."
-            )
-            return
-
-        realm_path = Path(self.realm_edit.text().strip()).expanduser()
-        if not realm_path.exists():
-            self.status_label.setText(
-                f"Export: client.realm not found at {realm_path}"
-            )
-            return
-
-        # Suggest <CollectionName>.db in Downloads as the default save path.
-        default_dir = Path.home() / "Downloads"
-        default_name = _safe_filename(target_name) + ".db"
-        dest_str, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export collection to .db",
-            str(default_dir / default_name),
-            "osu! collection database (*.db)",
-        )
-        if not dest_str:
-            return
-        dest_path = Path(dest_str)
-        if dest_path.suffix.lower() != ".db":
-            dest_path = dest_path.with_suffix(".db")
-
-        self.status_label.setText(f"Exporting '{target_name}' to .db…")
-        self.export_btn.setEnabled(False)
-        QApplication.processEvents()
-
-        try:
-            self._do_export_collection(target_name, realm_path, dest_path, cm_cli_cmd)
-            self.status_label.setText(f"Exported '{target_name}' to {dest_path}")
-        except Exception as e:
-            self.status_label.setText(f"Export failed: {e}")
-        finally:
-            self.export_btn.setEnabled(True)
-
-    def _do_export_collection(self, collection_name: str, realm_path: Path,
-                              dest_path: Path, cm_cli_cmd: list[str]) -> None:
-        """Workhorse for _on_export_collection. Raises on failure."""
-        cm = CmCliRunner(CmCliConfig(command=list(cm_cli_cmd), osu_location=None))
-        tmp_dir = realm_path.parent / ".oc-gui-tmp"
-        tmp_dir.mkdir(exist_ok=True)
-        snapshot_realm = tmp_dir / "export-snapshot.realm"
-        all_osdb = tmp_dir / "export-all.osdb"
-        single_osdb = tmp_dir / "export-single.osdb"
-
-        try:
-            # Snapshot so lazer can stay open during export.
-            shutil.copy2(realm_path, snapshot_realm)
-            cm.export_realm_to_osdb(snapshot_realm, all_osdb)
-
-            collections = OsdbReader.read(all_osdb)
-            match = next(
-                (c for c in collections if c.name.strip() == collection_name.strip()),
-                None,
-            )
-            if match is None:
-                raise RuntimeError(
-                    f"Collection '{collection_name}' not found in your lazer "
-                    f"realm. Click Refresh in 'Add to' to update the list."
-                )
-
-            # Write a single-collection .osdb, then convert that to .db.
-            OsdbWriter.write(single_osdb, match)
-            cm.convert_osdb_to_db(single_osdb, dest_path)
-        finally:
-            for p in (snapshot_realm, all_osdb, single_osdb):
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    def _on_browse(self) -> None:
-        d = QFileDialog.getExistingDirectory(
-            self, "Output folder", self.dir_edit.text()
-        )
-        if d:
-            self.dir_edit.setText(d)
-
-    def _on_browse_osu(self) -> None:
-        start = self.osu_path_edit.text() or str(Path.home())
-        if sys.platform == "win32":
-            filt = "osu! executable (osu!.exe);;All files (*)"
-        else:
-            filt = "osu! executable (osu*);;All files (*)"
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Locate osu!lazer binary", start, filt
-        )
-        if path:
-            self.osu_path_edit.setText(path)
-
-    def _on_detect_cm(self) -> None:
-        cfg = CmCliRunner.autodetect()
-        if cfg is not None:
-            self.cm_cli_edit.setText(shlex.join(cfg.command))
-            return
-
-        # Nothing found locally — offer to download from GitHub releases.
-        ans = QMessageBox.question(
-            self, APP_NAME,
-            "Collection Manager CLI was not found in any standard "
-            "location.\n\n"
-            "Download the latest release (~4 MB) from "
-            "github.com/Piotrekol/CollectionManager into "
-            f"{CM_CLI_CACHE_DIR} ?\n\n"
-            "On Linux this also runs:\n"
-            f"  flatpak override --user --filesystem={CM_CLI_CACHE_DIR} org.winehq.Wine\n"
-            "so the wine sandbox can read it.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-
-        QApplication.processEvents()
-        try:
-            CmCliInstaller.install(log_func=lambda s: None)
-        except Exception as e:
-            QMessageBox.critical(
-                self, APP_NAME,
-                f"Failed to install Collection Manager CLI:\n\n{e}"
-            )
-            return
-
-        cfg = CmCliRunner.autodetect()
-        if cfg is None:
-            QMessageBox.warning(
-                self, APP_NAME,
-                "Install completed but the auto-detector still can't find "
-                f"CM CLI in {CM_CLI_CACHE_DIR}. Open an issue with this "
-                "message."
-            )
-            return
-        self.cm_cli_edit.setText(shlex.join(cfg.command))
-        QMessageBox.information(
-            self, APP_NAME,
-            f"Installed Collection Manager CLI to {CM_CLI_CACHE_DIR}."
-        )
-
-    def _on_browse_realm(self) -> None:
-        start = self.realm_edit.text() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Locate client.realm", start,
-            "Realm DB (client.realm);;All files (*)"
-        )
-        if path:
-            self.realm_edit.setText(path)
-
-    # ----- shared lazer process helpers (used by refresh + recover) -------
-
-    @staticmethod
-    def _lazer_is_running() -> bool:
-        try:
-            import psutil
-        except ImportError:
-            return False
-        for p in psutil.process_iter(attrs=["name", "exe"]):
-            try:
-                name = (p.info.get("name") or "").lower()
-                exe = (p.info.get("exe") or "").lower()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            if db_dir in f.parents:
                 continue
-            if ("osu!" in name or "osu.exe" in name
-                    or name.startswith("osu_")
-                    or "osu!.exe" in exe):
-                return True
+            dest = db_dir / f.name
+            if dest.exists():
+                dest = db_dir / f"{f.parent.name} - {f.name}"
+            shutil.move(str(f), str(dest))
+            moved += 1
+        except OSError:
+            continue
+    if moved:
+        emit("log", {"line": f"[moved {moved} .osdb file(s) into {db_dir}]"})
+
+
+def _open_in_file_manager(path: Path) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
+
+
+class JsApi:
+    """The object pywebview exposes to JavaScript as window.pywebview.api.
+
+    Every public method is callable from the frontend and returns a
+    JSON-serialisable value. Long-running work (downloads, CM CLI export) runs
+    on background threads; progress is pushed back to the page via events.
+    """
+
+    def __init__(self) -> None:
+        self._window = None
+        self._settings = _load_settings()
+        self._downloader: Downloader | None = None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def set_window(self, window) -> None:
+        self._window = window
+
+    # ----- state / settings ------------------------------------------------
+
+    def get_state(self) -> dict:
+        """Everything the frontend needs to render its initial state."""
+        s = self._settings
+        auto = _autodetect_paths()
+        cm_value = s.get("cm_cli_command")
+        cm_str = shlex.join(cm_value) if isinstance(cm_value, list) and cm_value \
+            else (cm_value if isinstance(cm_value, str) else "") or auto["cm_cli_command"]
+        return {
+            "version": APP_VERSION,
+            "author": APP_AUTHOR,
+            "name": APP_NAME,
+            "platform": sys.platform,
+            "theme": s.get("theme", "dark"),
+            "output_dir": s.get("last_output_dir")
+                or str(Path.home() / "osu-collections"),
+            "target": s.get("target_collection", DEFAULT_TARGET),
+            "new_collection_name": s.get("new_collection_name", ""),
+            "settings": {
+                "auto_import": bool(s.get("auto_import", True)),
+                "skip_already_imported": bool(s.get("skip_already_imported", True)),
+                "restart_lazer_after": bool(s.get("restart_lazer_after", True)),
+                "generate_osdb": bool(s.get("generate_osdb", False)),
+                "consolidate_osdb": bool(s.get("consolidate_osdb", False)),
+                "cleanup_after_import": bool(s.get("cleanup_after_import", False)),
+                "download_parallel": int(s.get("download_parallel", DOWNLOAD_PARALLEL)),
+                "import_parallel": int(s.get("import_parallel", 1)),
+                "import_delay_ms": int(s.get("import_delay_ms", 0)),
+                "osu_binary": s.get("osu_binary") or auto["osu_binary"],
+                "lazer_realm_path": s.get("lazer_realm_path") or auto["realm_path"],
+                "cm_cli_command": cm_str,
+                "custom_mirrors": s.get("custom_mirrors", ""),
+            },
+            "detected": auto,
+            "labels": {
+                "default_target": DEFAULT_TARGET,
+                "new_target": NEW_TARGET,
+                "no_merge": target_combo_no_merge_label(),
+            },
+        }
+
+    def _merge_settings(self, settings: dict) -> None:
+        if not settings:
+            return
+        S = self._settings
+        for k in ("auto_import", "skip_already_imported", "restart_lazer_after",
+                  "generate_osdb", "consolidate_osdb", "cleanup_after_import"):
+            if k in settings:
+                S[k] = bool(settings[k])
+        for k in ("download_parallel", "import_parallel", "import_delay_ms"):
+            if k in settings:
+                try:
+                    S[k] = int(settings[k])
+                except (TypeError, ValueError):
+                    pass
+        if "osu_binary" in settings:
+            S["osu_binary"] = (settings["osu_binary"] or "").strip()
+        if "lazer_realm_path" in settings:
+            S["lazer_realm_path"] = (settings["lazer_realm_path"] or "").strip()
+        if "cm_cli_command" in settings:
+            S["cm_cli_command"] = _normalize_cm(settings["cm_cli_command"])
+        if "custom_mirrors" in settings:
+            S["custom_mirrors"] = settings["custom_mirrors"] or ""
+        if "theme" in settings:
+            S["theme"] = settings["theme"]
+
+    def save_settings(self, payload: dict) -> dict:
+        """Persist settings from the Settings panel; returns fresh state."""
+        payload = payload or {}
+        if "output_dir" in payload:
+            self._settings["last_output_dir"] = payload["output_dir"]
+        if "target" in payload:
+            self._settings["target_collection"] = payload["target"]
+        if "new_collection_name" in payload:
+            self._settings["new_collection_name"] = payload["new_collection_name"]
+        self._merge_settings(payload.get("settings", {}))
+        try:
+            _save_settings(self._settings)
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "state": self.get_state()}
+
+    def save_theme(self, theme: str) -> bool:
+        self._settings["theme"] = "light" if theme == "light" else "dark"
+        try:
+            _save_settings(self._settings)
+        except OSError:
+            return False
+        return True
+
+    # ----- pickers ---------------------------------------------------------
+
+    def choose_folder(self, current: str = "") -> str:
+        if not self._window:
+            return ""
+        try:
+            import webview
+            res = self._window.create_file_dialog(
+                webview.FOLDER_DIALOG,
+                directory=current or str(Path.home()),
+            )
+        except Exception:
+            return ""
+        if res:
+            return res[0] if isinstance(res, (list, tuple)) else str(res)
+        return ""
+
+    def choose_file(self, current: str = "") -> str:
+        if not self._window:
+            return ""
+        try:
+            import webview
+            directory = ""
+            if current:
+                p = Path(current).expanduser()
+                directory = str(p.parent if p.parent.exists() else Path.home())
+            res = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, directory=directory or str(Path.home()),
+                allow_multiple=False,
+            )
+        except Exception:
+            return ""
+        if res:
+            return res[0] if isinstance(res, (list, tuple)) else str(res)
+        return ""
+
+    def open_folder(self, path: str = "") -> bool:
+        target = Path(path or self._settings.get("last_output_dir")
+                      or (Path.home() / "osu-collections")).expanduser()
+        if target.exists():
+            _open_in_file_manager(target)
+            return True
         return False
 
-    @staticmethod
-    def _lazer_kill_running() -> int:
-        """Terminate any running osu!lazer process. Returns count killed."""
-        try:
-            import psutil
-        except ImportError:
-            return 0
-        killed = 0
-        for p in psutil.process_iter(attrs=["name", "exe"]):
+    # ----- collection preview + lazer scan ---------------------------------
+
+    def preview(self, text: str) -> dict:
+        """Lightweight metadata fetch for pasted IDs so the frontend can show
+        cherry poster cards. Metadata only — no beatmap detail pages."""
+        ids = _parse_ids(text)
+        client = OsuCollectorClient()
+        collections: list[dict] = []
+        for cid in ids[:24]:
             try:
-                name = (p.info.get("name") or "").lower()
-                exe = (p.info.get("exe") or "").lower()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-            if ("osu!" in name or "osu.exe" in name
-                    or name.startswith("osu_")
-                    or "osu!.exe" in exe):
-                try:
-                    p.terminate()
-                    killed += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        return killed
+                info = client.fetch_collection(cid)
+                cover = ""
+                if info.beatmapset_ids:
+                    cover = (f"https://assets.ppy.sh/beatmaps/"
+                             f"{info.beatmapset_ids[0]}/covers/cover.jpg")
+                collections.append({
+                    "id": info.id,
+                    "name": info.name,
+                    "uploader": info.uploader,
+                    "count": len(info.beatmapset_ids),
+                    "cover": cover,
+                })
+            except Exception as e:
+                collections.append({"id": cid, "error": str(e)})
+        return {"ids": ids, "collections": collections}
 
-    # ----- target collection picker ---------------------------------------
-
-    DEFAULT_TARGET = target_combo_default_label()
-    NEW_TARGET = "+ Create new collection..."
-    SEPARATOR = "──────────"
-
-    def _reset_target_combo(self) -> None:
-        """Populate the target combo with just the default + 'Create new' + 'Don't merge'."""
-        self.target_combo.blockSignals(True)
-        self.target_combo.clear()
-        self.target_combo.addItem(self.DEFAULT_TARGET)
-        self.target_combo.addItem(self.NEW_TARGET)
-        self.target_combo.addItem(target_combo_no_merge_label())
-        # Restore last-used selection if it still makes sense.
-        saved = self.settings.get("target_collection", "")
-        idx = self.target_combo.findText(saved) if saved else 0
-        self.target_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.target_combo.blockSignals(False)
-
-    def _on_target_changed(self, _idx: int) -> None:
-        text = self.target_combo.currentText()
-        show_new = (text == self.NEW_TARGET)
-        self.new_name_edit.setVisible(show_new)
-        self.new_name_label.setVisible(show_new)
-        if show_new:
-            self.new_name_edit.setFocus()
-
-    def _resolve_cm_cli(self) -> list[str] | None:
-        raw = self.cm_cli_edit.text().strip()
-        if raw:
-            try:
-                return shlex.split(raw)
-            except ValueError:
-                # Mismatched quotes etc. — fall back to plain split.
-                return raw.split()
-        cfg = CmCliRunner.autodetect()
-        if cfg is not None:
-            self.cm_cli_edit.setText(shlex.join(cfg.command))
-            return cfg.command
-        return None
-
-    def _update_skip_imported_enabled(self) -> None:
-        """Enable the skip-imported checkbox only when CM CLI is configured."""
-        cm_ok = bool(self._resolve_cm_cli())
-        self.skip_imported_cb.setEnabled(cm_ok)
-        if not cm_ok:
-            self.skip_imported_cb.setToolTip(
-                "Configure Collection Manager CLI in Advanced to enable this option."
-            )
-
-    def _on_refresh_collections(self) -> None:
-        """Run CM CLI export to read existing lazer collection names."""
-        realm_str = self.realm_edit.text().strip()
-        if not realm_str or not Path(realm_str).expanduser().exists():
-            QMessageBox.warning(
-                self, APP_NAME,
-                "client.realm path is empty or doesn't exist. Set it first."
-            )
-            return
-        cmd = self._resolve_cm_cli()
-        if cmd is None:
-            QMessageBox.warning(
-                self, APP_NAME,
-                "Collection Manager CLI not found. Install it or paste the "
-                "full invocation into the CM CLI command field."
-            )
-            return
-
-        self.refresh_collections_btn.setEnabled(False)
-        self.refresh_collections_btn.setText("Working…")
-        QApplication.processEvents()
+    def scan_collections(self) -> dict:
+        """Auto-scan the osu! folder: export existing lazer collections via CM
+        CLI so the user can pick one to merge into — no button required."""
+        auto = _autodetect_paths()
+        realm = (self._settings.get("lazer_realm_path") or auto["realm_path"]).strip()
+        cm_value = self._settings.get("cm_cli_command")
+        cmd = _normalize_cm(cm_value) or _normalize_cm(auto["cm_cli_command"])
+        if not realm or not Path(realm).expanduser().exists():
+            return {"ok": False, "reason": "no_realm"}
+        if not cmd:
+            return {"ok": False, "reason": "no_cm"}
         try:
-            collections = self._fetch_existing_collections(
-                cmd, Path(realm_str).expanduser()
-            )
+            cols = _fetch_existing_collections(cmd, Path(realm).expanduser())
         except Exception as e:
-            QMessageBox.critical(
-                self, APP_NAME,
-                f"Failed to read existing collections:\n\n{e}"
+            return {"ok": False, "reason": "error", "error": str(e)}
+        return {
+            "ok": True,
+            "collections": [
+                {"name": c.name, "count": len(c.beatmaps)} for c in cols
+            ],
+        }
+
+    # ----- the main action -------------------------------------------------
+
+    def start(self, payload: dict) -> dict:
+        payload = payload or {}
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"ok": False, "error": "A download is already running."}
+
+            ids = _parse_ids(payload.get("ids_text", ""))
+            if not ids:
+                return {"ok": False,
+                        "error": "No valid collection IDs or links found."}
+
+            out_dir = Path(payload.get("output_dir")
+                           or (Path.home() / "osu-collections")).expanduser()
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return {"ok": False, "error": f"Can't create output folder: {e}"}
+
+            # Persist the run's choices so the next launch remembers them.
+            self._settings["last_output_dir"] = str(out_dir)
+            target = payload.get("target", DEFAULT_TARGET)
+            self._settings["target_collection"] = target
+            new_name = (payload.get("new_collection_name") or "").strip()
+            self._settings["new_collection_name"] = new_name
+            self._merge_settings(payload.get("settings", {}))
+            try:
+                _save_settings(self._settings)
+            except OSError:
+                pass
+
+            auto = _autodetect_paths()
+            S = self._settings
+            cm_cmd = _normalize_cm(S.get("cm_cli_command")) \
+                or _normalize_cm(auto["cm_cli_command"]) or None
+            realm = (S.get("lazer_realm_path") or auto["realm_path"]).strip() or None
+            osu_bin = (S.get("osu_binary") or auto["osu_binary"]).strip() or None
+
+            no_merge = target_combo_no_merge_label()
+            add_to_lazer = target != no_merge
+            target_name: str | None = None
+            if target == NEW_TARGET:
+                if not new_name:
+                    return {"ok": False,
+                            "error": "Enter a name for the new collection."}
+                target_name = new_name
+            elif target not in (DEFAULT_TARGET, no_merge):
+                target_name = target  # an existing lazer collection name
+
+            extra_mirrors: list[str] = []
+            for line in str(S.get("custom_mirrors", "")).splitlines():
+                tmpl = BeatmapMirror.normalize_template(line)
+                if tmpl:
+                    extra_mirrors.append(tmpl)
+
+            job = DownloadJob(
+                collection_ids=ids,
+                output_dir=out_dir,
+                download_beatmaps=True,
+                extra_mirrors=extra_mirrors,
+                generate_osdb=bool(S.get("generate_osdb", False)),
+                auto_import=bool(S.get("auto_import", True)),
+                osu_binary=osu_bin,
+                import_parallel=int(S.get("import_parallel", 1)),
+                import_delay_ms=int(S.get("import_delay_ms", 0)),
+                add_to_lazer_collections=add_to_lazer,
+                cm_cli_command=cm_cmd,
+                lazer_realm_path=realm,
+                target_collection_name=target_name,
+                restart_lazer_after=bool(S.get("restart_lazer_after", True)),
+                cleanup_after_import=bool(S.get("cleanup_after_import", False)),
+                skip_already_imported=bool(S.get("skip_already_imported", True)),
+                download_parallel=int(S.get("download_parallel", DOWNLOAD_PARALLEL)),
             )
-            self.refresh_collections_btn.setEnabled(True)
-            self.refresh_collections_btn.setText("Refresh")
-            return
-        self.refresh_collections_btn.setEnabled(True)
-        self.refresh_collections_btn.setText("Refresh")
 
-        # Rebuild the combo: default → existing items → separator → new.
-        previous = self.target_combo.currentText()
-        self.target_combo.blockSignals(True)
-        self.target_combo.clear()
-        self.target_combo.addItem(self.DEFAULT_TARGET)
-        if collections:
-            self.target_combo.insertSeparator(self.target_combo.count())
-            for c in collections:
-                label = f"{c.name}  ({len(c.beatmaps)} maps)"
-                self.target_combo.addItem(label, userData=c.name)
-        self.target_combo.insertSeparator(self.target_combo.count())
-        self.target_combo.addItem(self.NEW_TARGET)
-        self.target_combo.addItem(target_combo_no_merge_label())
-        # Try to restore previous selection
-        idx = self.target_combo.findText(previous)
-        self.target_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.target_combo.blockSignals(False)
-        self._on_target_changed(self.target_combo.currentIndex())
+            consolidate = bool(S.get("consolidate_osdb", False))
+            self._downloader = Downloader(job, self._emit_event)
 
-        QMessageBox.information(
-            self, APP_NAME,
-            f"Found {len(collections)} existing collection(s) in lazer.\n"
-            "They're now selectable in the 'Add maps to' dropdown."
-        )
-
-    def _fetch_existing_collections(
-        self, cm_cli_command: list[str], realm_path: Path,
-    ) -> list[CollectionInfo]:
-        """Run CM CLI to export client.realm to a temp .osdb and parse it.
-
-        Strategy: copy the live client.realm to a sibling snapshot file,
-        then export from the snapshot. This lets osu!lazer stay open
-        (Realm uses MVCC so a file copy is a consistent point-in-time
-        snapshot of the committed state) and avoids the
-        Realm.NET 'realm in use' crash that fires when CM CLI tries to
-        open a file that another process already holds the writer lock
-        on.
-
-        IMPORTANT: when CM CLI runs through the wine flatpak, the
-        sandbox can only see directories explicitly granted to it
-        (typically just ~/.local/share/osu). Temp files in /tmp are
-        silently dropped — wine can't write there. So we keep the
-        snapshot + .osdb output next to the original realm.
-        """
-        snapshot = realm_path.parent / f".oc-gui-snapshot-{os.getpid()}.realm"
-        out = realm_path.parent / f".oc-gui-export-{os.getpid()}.osdb"
-        try:
-            shutil.copy2(realm_path, snapshot)
-
-            cm = CmCliRunner(CmCliConfig(
-                command=list(cm_cli_command),
-                osu_location=None,
-            ))
-            cm.export_realm_to_osdb(snapshot, out)
-            if not out.exists() or out.stat().st_size == 0:
-                raise RuntimeError(
-                    "Collection Manager CLI exited without producing an "
-                    "output file. Most likely the wine flatpak sandbox "
-                    "couldn't write to:\n"
-                    f"  {out}\n"
-                    "Grant it explicitly with:\n"
-                    f"  flatpak override --user --filesystem={out.parent} org.winehq.Wine"
-                )
-            return OsdbReader.read(out)
-        finally:
-            for p in (snapshot, out):
+            def _run() -> None:
                 try:
-                    p.unlink()
-                except OSError:
-                    pass
+                    self._downloader.run()
+                except Exception as e:
+                    self._emit_event("error", {"message": str(e)})
+                    self._emit_event("batch_finished",
+                                     {"ok": 0, "total": len(ids)})
+                finally:
+                    if consolidate:
+                        try:
+                            _consolidate_osdb(out_dir, self._emit_event)
+                        except Exception:
+                            pass
 
-    # ----- recover realm ---------------------------------------------------
+            self._thread = threading.Thread(target=_run, daemon=True,
+                                            name="oc-download")
+            self._thread.start()
+            return {"ok": True, "count": len(ids), "output_dir": str(out_dir)}
 
-    def _on_recover_realm(self) -> None:
-        """Restore client.realm from a .bak-<timestamp> snapshot."""
-        realm_str = self.realm_edit.text().strip()
-        if not realm_str:
-            QMessageBox.warning(self, APP_NAME,
-                                "Set the client.realm path first.")
-            return
-        realm = Path(realm_str).expanduser()
-        if not realm.parent.exists():
-            QMessageBox.critical(
-                self, APP_NAME,
-                f"Directory does not exist:\n{realm.parent}"
-            )
-            return
+    def cancel(self) -> bool:
+        if self._downloader:
+            self._downloader.cancel()
+        return True
 
-        # List available backups (any file matching client.realm.bak-*).
-        backups = sorted(
-            realm.parent.glob(realm.name + ".bak-*"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not backups:
-            QMessageBox.information(
-                self, APP_NAME,
-                f"No backups found in {realm.parent}.\n\n"
-                f"Backups are created automatically (named "
-                f"'{realm.name}.bak-<timestamp>') the first time you merge "
-                "collections into lazer. None exist yet."
-            )
-            return
-
-        # Build a friendly picker with timestamps + sizes.
-        items: list[str] = []
-        for b in backups:
-            ts = datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-            mb = b.stat().st_size / (1024 * 1024)
-            items.append(f"{b.name}    ({ts}, {mb:.1f} MB)")
-        items.append("Browse for a file…")
-
-        from PyQt6.QtWidgets import QInputDialog
-        choice, ok = QInputDialog.getItem(
-            self, "Recover realm",
-            f"Pick a backup to restore over:\n{realm}",
-            items, 0, False,
-        )
-        if not ok or not choice:
-            return
-
-        if choice == "Browse for a file…":
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Pick backup realm", str(realm.parent),
-                "Realm backup (*.bak-* *.realm);;All files (*)"
-            )
-            if not path:
-                return
-            chosen = Path(path)
+    def confirm_merge(self, proceed: bool) -> bool:
+        if not self._downloader:
+            return False
+        if proceed:
+            self._downloader.confirm_merge_continue()
         else:
-            chosen = backups[items.index(choice)]
+            self._downloader.cancel()
+        return True
 
-        if not chosen.exists():
-            QMessageBox.critical(self, APP_NAME, f"Backup file gone: {chosen}")
+    # ----- python → frontend ----------------------------------------------
+
+    def _emit_event(self, name: str, payload: dict) -> None:
+        if not self._window:
             return
-
-        # Confirm with full details.
-        confirm = QMessageBox.question(
-            self, APP_NAME,
-            f"Restore client.realm from this backup?\n\n"
-            f"  source: {chosen}\n"
-            f"  target: {realm}\n\n"
-            f"osu!lazer will be terminated first. The current realm will "
-            f"itself be backed up to {realm.name}.before-recover-<timestamp> "
-            f"so you can undo.",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        # Kill any running lazer.
         try:
-            import psutil
-            for p in psutil.process_iter(attrs=["name", "exe"]):
-                try:
-                    name = (p.info.get("name") or "").lower()
-                    exe = (p.info.get("exe") or "").lower()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-                if ("osu!" in name or "osu.exe" in name
-                        or name.startswith("osu_")
-                        or "osu!.exe" in exe):
-                    try:
-                        p.terminate()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            time.sleep(2)
-        except ImportError:
+            msg = json.dumps({"event": name, "data": payload})
+        except (TypeError, ValueError):
+            msg = json.dumps({"event": name, "data": {}})
+        try:
+            self._window.evaluate_js(f"window.ocOnEvent({msg})")
+        except Exception:
             pass
 
-        # Take a safety copy of the current state before overwriting.
-        try:
-            if realm.exists():
-                ts = int(time.time())
-                safety = realm.with_suffix(realm.suffix + f".before-recover-{ts}")
-                shutil.copy2(realm, safety)
-        except OSError as e:
-            r = QMessageBox.warning(
-                self, APP_NAME,
-                f"Couldn't back up the current realm before restoring:\n{e}\n\n"
-                "Continue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                return
-
-        # The actual restore.
-        try:
-            shutil.copy2(chosen, realm)
-        except OSError as e:
-            QMessageBox.critical(
-                self, APP_NAME,
-                f"Restore failed:\n{e}"
-            )
-            return
-
-        QMessageBox.information(
-            self, APP_NAME,
-            f"Restored {realm.name} from {chosen.name}.\n\n"
-            "You can launch osu!lazer normally now."
-        )
-
-    def _on_start(self) -> None:
-        ids = self._parse_ids(self.ids_edit.toPlainText())
-        if not ids:
-            QMessageBox.warning(self, APP_NAME, "No valid collection IDs.")
-            return
-
-        out_dir = Path(self.dir_edit.text()).expanduser()
-        try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            QMessageBox.critical(self, APP_NAME, f"Can't create output dir:\n{e}")
-            return
-
-        self._save_settings()
-
-        # Resolve CM CLI for collection-merging features (skip-imported etc.).
-        # cm_cli_cmd is None when the user hasn't configured CM CLI — that's fine;
-        # add_to_lazer_collections will be False in that case.
-        cm_cli_cmd: list[str] | None = self._resolve_cm_cli()
-
-        target_text = self.target_combo.currentText()
-        # add_to_lazer follows the picker: anything except the "Don't merge"
-        # sentinel means we want the realm round-trip. Empty string can occur
-        # mid-startup before the combo populates — treat that as merge-on too
-        # so we don't accidentally disable merging due to a race condition.
-        add_to_lazer = target_text != target_combo_no_merge_label()
-
-        # Resolve the target collection choice into a single name override
-        # (or None if the user wants the default per-collection naming).
-        target_name: str | None = None
-        if target_text == self.NEW_TARGET:
-            new_name = self.new_name_edit.text().strip()
-            if not new_name:
-                QMessageBox.warning(
-                    self, APP_NAME,
-                    "Pick a name for the new collection."
-                )
-                return
-            target_name = new_name
-        elif target_text and target_text not in (self.DEFAULT_TARGET, target_combo_no_merge_label()):
-            # Pulled from existing list — use userData when present
-            # (the visible label has " (N maps)" appended).
-            ud = self.target_combo.currentData()
-            target_name = ud if ud else target_text
-
-        # Parse any user-supplied custom mirrors (one per line) into templates.
-        extra_mirrors: list[str] = []
-        for line in self.custom_mirror_edit.toPlainText().splitlines():
-            tmpl = BeatmapMirror.normalize_template(line)
-            if tmpl:
-                extra_mirrors.append(tmpl)
-
-        job = DownloadJob(
-            collection_ids=ids,
-            output_dir=out_dir,
-            download_beatmaps=True,
-            extra_mirrors=extra_mirrors,
-            generate_osdb=self.generate_osdb_cb.isChecked(),
-            auto_import=self.auto_import_cb.isChecked(),
-            osu_binary=self.osu_path_edit.text().strip() or None,
-            import_parallel=self.import_parallel_spin.value(),
-            import_delay_ms=self.import_delay_spin.value(),
-            add_to_lazer_collections=add_to_lazer,
-            cm_cli_command=cm_cli_cmd,
-            lazer_realm_path=self.realm_edit.text().strip() or None,
-            target_collection_name=target_name,
-            restart_lazer_after=self.restart_lazer_cb.isChecked(),
-            cleanup_after_import=self.cleanup_cb.isChecked(),
-            skip_already_imported=self.skip_imported_cb.isChecked(),
-            download_parallel=self.download_parallel_spin.value(),
-        )
-
-        self.thread = QThread()
-        self.worker = DownloadWorker(job)
-        self.worker.moveToThread(self.thread)
-
-        self.worker.log.connect(self._append_log)
-        self.worker.collection_started.connect(self._on_collection_started)
-        self.worker.beatmap_progress.connect(self._on_beatmap_progress)
-        self.worker.collection_finished.connect(self._on_collection_finished)
-        self.worker.batch_finished.connect(self._on_batch_finished)
-        self.worker.error.connect(lambda msg: self._append_log(f"ERROR: {msg}"))
-        self.worker.awaiting_import_confirmation.connect(
-            self._on_awaiting_import_confirmation
-        )
-
-        self.thread.started.connect(self.worker.run)
-        self.thread.start()
-
-        self.log_box.clear()
-        self.start_btn.setVisible(False)
-        self.cancel_btn.setVisible(True)
-        self.status_label.setText("Starting…")
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
-
-    def _on_cancel(self) -> None:
-        if self.worker:
-            self.worker.cancel()
-            self._append_log("[cancel requested]")
-
-    @staticmethod
-    def _parse_ids(text: str) -> list[int]:
-        ids: list[int] = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = re.search(r"/collections/(\d+)", line)
-            if m:
-                ids.append(int(m.group(1)))
-            elif line.isdigit():
-                ids.append(int(line))
-        return ids
-
-    # ----- worker signal handlers ------------------------------------------
-
-    def _append_log(self, msg: str) -> None:
-        self.log_box.appendPlainText(msg)
-
-    def _on_collection_started(self, idx: int, total: int, name: str, n_sets: int) -> None:
-        self.status_label.setText(f"Collection {idx}/{total} — {name}  ({n_sets} sets)")
-        if total > 0:
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setMaximum(total * max(n_sets, 1))
-            self.progress_bar.setValue((idx - 1) * max(n_sets, 1))
-
-    def _on_beatmap_progress(self, current: int, total: int) -> None:
-        self.status_label.setText(f"Beatmap {current} / {total}")
-        self.progress_bar.setMaximum(max(total, 1))
-        self.progress_bar.setValue(current)
-
-    def _on_collection_finished(self, idx: int, ok: int, total: int) -> None:
-        pass  # progress_bar updated via _on_beatmap_progress; no separate col bar
-
-    def _on_awaiting_import_confirmation(self, n_imports: int) -> None:
-        """Modal prompt: 'has osu!lazer finished importing the maps?'
-
-        Until the user clicks OK, the worker is blocked at the start of
-        _merge_into_lazer. Clicking Cancel aborts the whole batch.
-        """
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setWindowTitle(APP_NAME)
-        msg.setText("Has osu!lazer finished importing the downloaded maps?")
-        msg.setInformativeText(
-            f"{n_imports} map(s) were sent to osu!lazer for import.\n\n"
-            "osu!lazer processes imports asynchronously — it may still be "
-            "extracting and hashing beatmaps in the background.\n\n"
-            "Open osu!lazer and check that the import notifications have "
-            "all finished, then click 'Continue merge'.\n\n"
-            "WARNING: clicking Continue while imports are still in flight "
-            "will terminate osu!lazer mid-import and the unfinished maps "
-            "will not end up in the merged collection."
-        )
-        cont = msg.addButton("Continue merge", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("Cancel batch", QMessageBox.ButtonRole.RejectRole)
-        msg.setDefaultButton(cont)
-        msg.exec()
-
-        if msg.clickedButton() is cont:
-            if self.worker:
-                self.worker.confirm_merge_continue()
-        else:
-            if self.worker:
-                self.worker.cancel()
-            self._append_log("[cancelled by user before merge]")
-
-    def _on_batch_finished(self, ok: int, total: int) -> None:
-        self._append_log(f"\n[done — {ok}/{total} collections succeeded]")
-        self.status_label.setText(f"Done.  {ok}/{total} collections succeeded.")
-        self.progress_bar.setVisible(False)
-        if self.consolidate_cb.isChecked():
-            self._consolidate_osdb()
-        if self.thread:
-            self.thread.quit()
-            self.thread.wait()
-        self.thread = None
-        self.worker = None
-        self.start_btn.setVisible(True)
-        self._update_start_enabled()
-        self.cancel_btn.setVisible(False)
-
-    def _consolidate_osdb(self) -> None:
-        out_dir = Path(self.dir_edit.text()).expanduser()
-        db_dir = out_dir / "db"
-        db_dir.mkdir(exist_ok=True)
-        moved = 0
-        for f in out_dir.rglob("*.osdb"):
-            try:
-                if db_dir in f.parents:
-                    continue
-                dest = db_dir / f.name
-                if dest.exists():
-                    dest = db_dir / f"{f.parent.name} - {f.name}"
-                shutil.move(str(f), str(dest))
-                moved += 1
-            except OSError:
-                continue
-        if moved:
-            self._append_log(f"[moved {moved} .osdb file(s) into {db_dir}]")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> int:
-    # Honor non-integer Windows DPI scaling (125%, 150%) precisely instead
-    # of rounding to the nearest integer factor — Qt 6's default Round
-    # policy is the root cause of 1-pixel-off widget heights that fool the
-    # QScrollArea's sizeHint() into underestimating content height on
-    # Windows. Must be set BEFORE constructing QApplication.
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    try:
+        import webview
+    except ImportError:
+        sys.stderr.write(
+            "pywebview is required to run the GUI.\n"
+            "Install it with:  pip install -r requirements.txt\n"
+        )
+        return 1
+
+    index = WEB_DIR / "index.html"
+    if not index.exists():
+        sys.stderr.write(f"Frontend assets not found at {index}\n")
+        return 1
+
+    api = JsApi()
+    state = api._settings
+    bg = "#fafafa" if state.get("theme") == "light" else "#0d0a0b"
+    window = webview.create_window(
+        f"{APP_NAME} v{APP_VERSION} by {APP_AUTHOR}",
+        url=str(index),
+        js_api=api,
+        width=1200,
+        height=840,
+        min_size=(940, 640),
+        background_color=bg,
     )
-    app = QApplication(sys.argv)
-    # A single point-sized base font so every widget scales from one source
-    # and stays a consistent physical size from 1080p through 4K. Pixel
-    # sizes in the QSS that need to differ are set per-role there.
-    base_font = QFont(app.font())
-    base_font.setPointSizeF(10.0)
-    app.setFont(base_font)
-    app.setStyleSheet(QSS)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationVersion(APP_VERSION)
-    win = MainWindow()
-    win.show()
-    return app.exec()
+    api.set_window(window)
+    webview.start()
+    return 0
 
 
 if __name__ == "__main__":
