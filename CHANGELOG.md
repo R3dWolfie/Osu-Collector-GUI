@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] — 2026-06-22
+
+### Added
+
+- **Export tab.** Save an osu!lazer collection — one, or all of them — to a
+  `.db` (osu! stable / osu!collector) or `.osdb` (Collection Manager) file via
+  a native Save dialog.
+
 ## [1.2.0] — 2026-06-22
 
 ### Fixed
