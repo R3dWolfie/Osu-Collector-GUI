@@ -50,6 +50,9 @@
       <button class="nav-item" data-view="settings">
         <span class="ico">⚙</span> Settings
       </button>
+      <button class="nav-item" data-view="export">
+        <span class="ico">↥</span> Export
+      </button>
       <div class="sidebar-foot">
         <div>a R3D project</div>
         <div id="foot-detect">scanning…</div>
@@ -230,6 +233,31 @@
         <div class="go-row">
           <button class="btn btn-primary" id="save-settings">Save settings</button>
           <span class="dim mono" id="save-status" style="font-size:12px;"></span>
+        </div>
+      </section>
+
+      <!-- ----------------------- EXPORT VIEW ---------------------- -->
+      <section class="view container" id="view-export">
+        <div class="view-head">
+          <span class="kicker">// export</span>
+          <h2>Export a collection</h2>
+          <p>Save an osu!lazer collection to a <code>.db</code> (osu! stable /
+             osu!collector) or an <code>.osdb</code> (Collection Manager) file.</p>
+        </div>
+
+        <div class="card">
+          <label class="field-label" for="export-target">Collection</label>
+          <select id="export-target" class="select"></select>
+          <label class="field-label" for="export-format" style="margin-top:14px;">Format</label>
+          <select id="export-format" class="select">
+            <option value=".db">collection.db — osu! stable / osu!collector</option>
+            <option value=".osdb">.osdb — Collection Manager</option>
+          </select>
+        </div>
+
+        <div class="go-row">
+          <button class="btn btn-primary" id="export-go">Export to file…</button>
+          <span class="dim mono" id="export-status" style="font-size:12px;"></span>
         </div>
       </section>
     </main>

@@ -2620,6 +2620,103 @@ class JsApi:
             ],
         }
 
+    # ----- export ----------------------------------------------------------
+
+    def choose_save_path(self, default_name: str = "collection.db") -> str:
+        """Native 'Save as…' dialog for the export destination."""
+        if not self._window:
+            return ""
+        try:
+            import webview
+            res = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=str(Path.home()),
+                save_filename=default_name or "collection.db",
+            )
+        except Exception:
+            return ""
+        if res:
+            return res[0] if isinstance(res, (list, tuple)) else str(res)
+        return ""
+
+    def export_to_file(self, payload: dict) -> dict:
+        """Export an existing osu!lazer collection (or all of them) to a
+        `.db` (osu! stable / collector format) or `.osdb` file.
+
+        The CM CLI runs in the wine sandbox and can only write where it's been
+        granted (the realm folder), so we produce the file next to the realm
+        and then move it to the user's chosen destination.
+        """
+        payload = payload or {}
+        name = (payload.get("collection") or "").strip()      # "" = all
+        dest_s = (payload.get("dest") or "").strip()
+        if not dest_s:
+            return {"ok": False, "error": "No destination chosen."}
+        dest = Path(dest_s).expanduser()
+        fmt = ".osdb" if dest.suffix.lower() == ".osdb" else ".db"
+
+        auto = _autodetect_paths()
+        realm_s = (self._settings.get("lazer_realm_path")
+                   or auto["realm_path"] or "").strip()
+        if not realm_s or not Path(realm_s).expanduser().exists():
+            return {"ok": False, "error": "osu!lazer client.realm not found."}
+        realm = Path(realm_s).expanduser()
+        cmd = (_normalize_cm(self._settings.get("cm_cli_command"))
+               or _normalize_cm(auto["cm_cli_command"]))
+        if not cmd:
+            try:
+                if not CmCliInstaller.installed_exe():
+                    CmCliInstaller.install(log_func=lambda s: None)
+                cmd = _normalize_cm(_autodetect_paths()["cm_cli_command"])
+            except Exception:
+                pass
+        if not cmd:
+            return {"ok": False, "error": "Collection Manager CLI not available "
+                    "(on Linux, run scripts/setup-linux.sh once)."}
+
+        cm = CmCliRunner(CmCliConfig(command=list(cmd), osu_location=None))
+        pid = os.getpid()
+        tmp: list[Path] = []
+
+        def near(suffix: str) -> Path:
+            p = realm.parent / f".oc-gui-export-{pid}{suffix}"
+            tmp.append(p)
+            return p
+
+        try:
+            snapshot = near(".realm")
+            shutil.copy2(realm, snapshot)
+            full_osdb = near(".osdb")
+            cm.export_realm_to_osdb(snapshot, full_osdb)
+
+            if name:
+                one = next((c for c in OsdbReader.read(full_osdb)
+                            if c.name == name), None)
+                if one is None:
+                    return {"ok": False, "error": f"Collection {name!r} not found."}
+                src_osdb = near(".one.osdb")
+                OsdbWriter.write(src_osdb, one)
+            else:
+                src_osdb = full_osdb
+
+            if fmt == ".osdb":
+                produced = src_osdb
+            else:
+                produced = near(".out.db")
+                cm.convert_osdb_to_db(src_osdb, produced)
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(produced), str(dest))
+            return {"ok": True, "path": str(dest)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            for p in tmp:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     # ----- the main action -------------------------------------------------
 
     def start(self, payload: dict) -> dict:
