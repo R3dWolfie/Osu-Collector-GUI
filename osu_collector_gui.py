@@ -1750,10 +1750,11 @@ class Downloader:
                 self._merge_into_lazer()
             except Exception as e:
                 self._error(f"lazer collection merge failed: {e}")
-        elif self.job.auto_import and self._import_calls_issued > 0 and not self._cancelled:
-            # No merge step to gate cleanup behind, but we still need
-            # the user to confirm imports finished before deleting the
-            # source files lazer might still be reading.
+        elif (self.job.auto_import and self._import_calls_issued > 0
+              and self.job.cleanup_after_import and not self._cancelled):
+            # No merge, but cleanup is on — confirm imports finished before
+            # deleting the source files lazer might still be reading. With no
+            # merge AND no cleanup there's nothing to gate, so don't prompt.
             self._continue_merge_event.clear()
             self._awaiting_import(self._import_calls_issued)
             self._continue_merge_event.wait(timeout=3600)
