@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] — 2026-06-22
+
+### Fixed
+
+- **Collection list/merge now gets the right runtime.** The Collection Manager
+  CLI is a .NET 9 app; the Windows installer now installs the **.NET 9 Desktop
+  Runtime** (it was installing .NET Framework 4.8 — the wrong runtime, so merges
+  failed on clean Windows machines).
+
+### Added
+
+- **`scripts/setup-linux.sh`** — one-time Linux setup for the collection feature:
+  installs the WineHQ flatpak + the .NET 9 runtime into its wine prefix and grants
+  sandbox access to your osu! data. Downloads + auto-import work without it.
+- Existing collections now **auto-load on open** (the CM CLI auto-downloads
+  during the scan, not only on a merge run).
+
 ## [1.1.4] — 2026-06-22
 
 ### Fixed
