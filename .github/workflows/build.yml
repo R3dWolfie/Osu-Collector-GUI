@@ -134,6 +134,11 @@ jobs:
           chmod +x AppDir/AppRun
           cp packaging/osu-collector-gui.desktop AppDir/osu-collector-gui.desktop
           cp packaging/icon-256.png AppDir/osu-collector-gui.png
+          # Also install into the hicolor theme path so desktop-integration tools
+          # (AppImageLauncher, AppImagePool, GNOME/KDE) can extract the icon for
+          # the app-menu entry — the root .DirIcon alone isn't enough for them.
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp packaging/icon-256.png AppDir/usr/share/icons/hicolor/256x256/apps/osu-collector-gui.png
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
           export APPIMAGE_EXTRACT_AND_RUN=1
