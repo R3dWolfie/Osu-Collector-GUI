@@ -5,7 +5,7 @@
 ;   dist\osu-collector-gui.exe                       (PyInstaller one-file build)
 ;   deps\cm-cli\CollectionManager.App.Cli.exe        (+ realm-wrappers.dll)
 ;   deps\MicrosoftEdgeWebview2Setup.exe              (WebView2 evergreen bootstrapper)
-;   deps\ndp48-web.exe                               (.NET Framework 4.8 web installer)
+;   deps\windowsdesktop-runtime.exe                  (.NET 9 Desktop Runtime — the CM CLI is .NET 9)
 ; CI (.github/workflows/build.yml) fetches these deps before invoking ISCC.
 
 #ifndef AppVersion
@@ -51,8 +51,9 @@ Source: "dist\osu-collector-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "deps\cm-cli\*"; DestDir: "{app}\cm-cli"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; WebView2 bootstrapper: extracted to {tmp} on demand and run only if missing.
 Source: "deps\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
-; .NET Framework 4.8 web installer: run elevated only if .NET is absent/too old.
-Source: "deps\ndp48-web.exe"; Flags: dontcopy
+; .NET 9 Desktop Runtime: run elevated only if .NET 9 is missing (the bundled
+; Collection Manager CLI is a single-file .NET 9 app).
+Source: "deps\windowsdesktop-runtime.exe"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\osu!collector-gui"; Filename: "{app}\osu-collector-gui.exe"
@@ -68,12 +69,17 @@ const
 
 function DotNetReady(): Boolean;
 var
-  rel: Cardinal;
+  rec: TFindRec;
 begin
-  // .NET Framework 4.7.2+ (Release >= 461808) — required by the CM CLI.
-  Result := RegQueryDWordValue(HKLM,
-    'SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full', 'Release', rel)
-    and (rel >= 461808);
+  // The bundled Collection Manager CLI is a .NET 9 app — look for a 9.x
+  // Microsoft.WindowsDesktop.App runtime under Program Files\dotnet.
+  Result := False;
+  if FindFirst(ExpandConstant(
+       '{commonpf64}\dotnet\shared\Microsoft.WindowsDesktop.App\9.*'), rec) then
+  begin
+    Result := True;
+    FindClose(rec);
+  end;
 end;
 
 function WebView2Installed(): Boolean;
@@ -99,10 +105,10 @@ begin
   // this rarely fires.
   if not DotNetReady() then
   begin
-    WizardForm.StatusLabel.Caption := 'Installing the .NET Framework runtime...';
-    ExtractTemporaryFile('ndp48-web.exe');
-    ShellExec('runas', ExpandConstant('{tmp}\ndp48-web.exe'),
-              '/q /norestart', '', SW_SHOW, ewWaitUntilTerminated, rc);
+    WizardForm.StatusLabel.Caption := 'Installing the .NET 9 Desktop Runtime...';
+    ExtractTemporaryFile('windowsdesktop-runtime.exe');
+    ShellExec('runas', ExpandConstant('{tmp}\windowsdesktop-runtime.exe'),
+              '/quiet /norestart', '', SW_SHOW, ewWaitUntilTerminated, rc);
   end;
   // Edge WebView2 — the pywebview GUI renders in it. The evergreen bootstrapper
   // installs per-user when unelevated, so no UAC needed.
