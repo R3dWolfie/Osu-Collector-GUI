@@ -466,7 +466,7 @@ function escapeHtml(s) {
 /* ----------------------------------------------------- day presets (R3D) */
 // Hardcoded, in weekday order. These are Red's own osu!collector collections.
 const PRESETS = [
-  { day: "Monday",   name: "AimSlop",             count: "8,606",  id: "21994", slug: "Monday-AimSlop" },
+  { day: "Monday",   name: "AimSlop",             count: "15,631", id: "21994", slug: "Monday-AimSlop" },
   { day: "Tuesday",  name: "Streams",             count: "12,127", id: "21995", slug: "Tuesday-Streams" },
   { day: "Thursday", name: "Finger Control Hell", count: "8,754",  id: "21996", slug: "Thursday-Finger-Control-Hell" },
   { day: "Friday",   name: "Techy",               count: "2,087",  id: "21997", slug: "Friday-Techy" },

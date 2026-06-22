@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] — 2026-06-22
+
+### Changed
+
+- **Monday AimSlop quick preset refreshed.** The collection (#21994) grew to
+  15,631 maps; the preset card now shows the current count (was 8,606).
+
 ## [1.3.0] — 2026-06-22
 
 ### Added
