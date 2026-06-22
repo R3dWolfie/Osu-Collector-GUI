@@ -35,9 +35,11 @@ WizardStyle=modern
 ; R3D "Cherry" branding (base + @2x for HiDPI; Inno picks the closest).
 WizardImageFile=packaging\wizard-large.bmp,packaging\wizard-large@2x.bmp
 WizardSmallImageFile=packaging\wizard-small.bmp,packaging\wizard-small@2x.bmp
-; Make sure a running instance is closed so its files can be replaced
-; (this is what enables seamless in-app updates).
-CloseApplications=yes
+; Force-close a running instance so its files can be replaced — this is what
+; makes in-app updates work. 'force' terminates the app after the Restart
+; Manager's bounded wait instead of hanging forever on "Closing applications"
+; (a pywebview/WebView2 window doesn't answer the graceful-close request).
+CloseApplications=force
 RestartApplications=no
 
 [Tasks]
