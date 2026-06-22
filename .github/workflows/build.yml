@@ -106,9 +106,18 @@ jobs:
             --osx-bundle-identifier com.r3d.osucollectorgui \
             osu_collector_gui.py
           test -d "dist/osu-collector-gui.app" || { echo "no .app"; exit 1; }
-          hdiutil create -volname "osu-collector-gui" \
-            -srcfolder "dist/osu-collector-gui.app" \
-            -ov -format UDZO "dist/osu-collector-gui.dmg"
+          # hdiutil intermittently fails with "Resource busy" when Spotlight /
+          # diskarbitration is still touching the freshly-built .app. Retry.
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "osu-collector-gui" \
+                 -srcfolder "dist/osu-collector-gui.app" \
+                 -ov -format UDZO "dist/osu-collector-gui.dmg"; then
+              echo "dmg created (attempt $attempt)"; break
+            fi
+            if [ "$attempt" -eq 5 ]; then echo "hdiutil failed after 5 attempts"; exit 1; fi
+            echo "hdiutil attempt $attempt failed (likely Resource busy) — retrying in 5s..."
+            sleep 5
+          done
 
       # =============================== LINUX ===============================
       - name: Build AppImage (Linux)
