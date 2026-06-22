@@ -2860,7 +2860,25 @@ def main() -> int:
         background_color=bg,
     )
     api.set_window(window)
+
+    # Closing the window must actually exit the process. The download/import
+    # executor threads are non-daemon, so a normal return would make Python hang
+    # at exit waiting to join them — the app lingers as a background process.
+    # Cancel any running job and hard-exit when the window closes.
+    def _shutdown(*_args):
+        try:
+            api.cancel()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        window.events.closed += _shutdown
+    except Exception:
+        pass
+
     webview.start()
+    _shutdown()
     return 0
 
 
