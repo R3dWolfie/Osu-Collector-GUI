@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] — 2026-06-22
+
+### Added
+
+- **Weekday presets** on the Download view — Monday AimSlop · Tuesday Streams ·
+  Thursday Finger Control Hell · Friday Techy — plus a one-click
+  **"Import All 4 · Red's Recommended"** button that grabs all four into their
+  own osu!lazer collections.
+- **Skip-videos mode (on by default)** — downloads the no-video version of each
+  map (~70% smaller for video maps); toggle it off in Settings to keep videos.
+- **Bundled, R3D-themed Windows installer** — ships the Collection Manager CLI
+  and installs the Edge WebView2 / .NET Framework runtimes only if missing.
+
+### Changed
+
+- Faster downloads: a 6th mirror (sayobot), higher per-mirror concurrency cap
+  (8 → 12), more worker threads (24 → 48, ceiling 64) and a larger connection
+  pool.
+- Poster kicker recoloured for legibility over cover art.
+
 ## [1.0.2] — 2026-06-22
 
 ### Fixed
