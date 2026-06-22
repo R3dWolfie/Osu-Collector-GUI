@@ -70,6 +70,19 @@ FALLBACK_MIRRORS = [
     "https://dl.sayobot.cn/beatmaps/download/full/{id}",
 ]
 
+# No-video download endpoints per mirror. Skipping the background video cuts a
+# video set's size by ~70% (verified). Mirrors without a known no-video URL fall
+# back to their full template, so a map never fails — it just keeps its video
+# from those mirrors.
+NO_VIDEO_TEMPLATES = {
+    "https://catboy.best/d/{id}": "https://catboy.best/d/{id}n",
+    "https://api.nerinyan.moe/d/{id}": "https://api.nerinyan.moe/d/{id}?noVideo=true",
+    "https://osu.direct/d/{id}": "https://osu.direct/d/{id}?noVideo=true",
+    "https://mirror.nekoha.moe/api4/download/{id}": "https://mirror.nekoha.moe/api4/download/{id}?novideo=1",
+    "https://beatconnect.io/b/{id}": "https://beatconnect.io/b/{id}?novideo=1",
+    "https://dl.sayobot.cn/beatmaps/download/full/{id}": "https://dl.sayobot.cn/beatmaps/download/novideo/{id}",
+}
+
 # After a mirror's connect fails, blacklist it for this many seconds so
 # other parallel download slots don't waste their connect-timeout on it.
 MIRROR_DEAD_TTL_S = 60
@@ -283,7 +296,8 @@ class BeatmapMirror:
     def __init__(self, primary: str = DEFAULT_MIRROR,
                  fallbacks: Iterable[str] = FALLBACK_MIRRORS,
                  extra: Iterable[str] = (),
-                 pool_maxsize: int = 64) -> None:
+                 pool_maxsize: int = 64,
+                 no_video: bool = False) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         # Size the connection pool to the max parallelism so high worker
@@ -298,8 +312,13 @@ class BeatmapMirror:
         # User-supplied custom mirrors go first so they're preferred, then
         # the built-ins. De-duplicated, order preserved.
         seen: set[str] = set()
+        ordered = [*extra, primary, *fallbacks]
+        if no_video:
+            # Swap each built-in for its no-video endpoint (~70% smaller for
+            # video maps); unknown/custom templates pass through unchanged.
+            ordered = [NO_VIDEO_TEMPLATES.get(u, u) for u in ordered]
         self.urls = [
-            u for u in [*extra, primary, *fallbacks]
+            u for u in ordered
             if u and not (u in seen or seen.add(u))
         ]
 
@@ -1379,6 +1398,7 @@ class DownloadJob:
     import_delay_ms: int = 0            # min delay between import calls
     mirror_url: str = DEFAULT_MIRROR
     extra_mirrors: list[str] = field(default_factory=list)  # user templates
+    skip_video: bool = True             # prefer no-video .osz where supported
     # Lazer collection merging via CM CLI
     add_to_lazer_collections: bool = False
     cm_cli_command: list[str] | None = None  # full argv prefix
@@ -1428,7 +1448,8 @@ class Downloader:
         self._cancelled = False
         self.api = OsuCollectorClient()
         self.mirror = BeatmapMirror(primary=job.mirror_url,
-                                    extra=job.extra_mirrors)
+                                    extra=job.extra_mirrors,
+                                    no_video=job.skip_video)
         # Always construct the importer so we know the lazer binary path
         # for the post-merge restart, even if auto_import is off. The
         # _maybe_import path checks job.auto_import before actually
@@ -2381,6 +2402,7 @@ class JsApi:
             "settings": {
                 "auto_import": bool(s.get("auto_import", True)),
                 "skip_already_imported": bool(s.get("skip_already_imported", True)),
+                "skip_video": bool(s.get("skip_video", True)),
                 "restart_lazer_after": bool(s.get("restart_lazer_after", True)),
                 "generate_osdb": bool(s.get("generate_osdb", False)),
                 "consolidate_osdb": bool(s.get("consolidate_osdb", False)),
@@ -2406,7 +2428,8 @@ class JsApi:
             return
         S = self._settings
         for k in ("auto_import", "skip_already_imported", "restart_lazer_after",
-                  "generate_osdb", "consolidate_osdb", "cleanup_after_import"):
+                  "generate_osdb", "consolidate_osdb", "cleanup_after_import",
+                  "skip_video"):
             if k in settings:
                 S[k] = bool(settings[k])
         for k in ("download_parallel", "import_parallel", "import_delay_ms"):
@@ -2658,6 +2681,7 @@ class JsApi:
                 cleanup_after_import=bool(S.get("cleanup_after_import", False)),
                 skip_already_imported=bool(S.get("skip_already_imported", True)),
                 download_parallel=int(S.get("download_parallel", DOWNLOAD_PARALLEL)),
+                skip_video=bool(S.get("skip_video", True)),
             )
 
             consolidate = bool(S.get("consolidate_osdb", False))
