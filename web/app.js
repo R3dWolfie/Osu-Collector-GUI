@@ -459,3 +459,98 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+/* ----------------------------------------------------- day presets (R3D) */
+// Hardcoded, in weekday order. These are Red's own osu!collector collections.
+const PRESETS = [
+  { day: "Monday",   name: "AimSlop",             count: "8,606",  id: "21994", slug: "Monday-AimSlop" },
+  { day: "Tuesday",  name: "Streams",             count: "12,127", id: "21995", slug: "Tuesday-Streams" },
+  { day: "Thursday", name: "Finger Control Hell", count: "8,754",  id: "21996", slug: "Thursday-Finger-Control-Hell" },
+  { day: "Friday",   name: "Techy",               count: "2,087",  id: "21997", slug: "Friday-Techy" },
+];
+
+function presetLink(p) {
+  return "https://osucollector.com/collections/" + p.id + "/" + p.slug;
+}
+
+// Pull a collection id out of a pasted line ("…/collections/123/…" or a bare "123").
+function lineCollectionId(line) {
+  line = (line || "").trim();
+  const m = line.match(/collections\/(\d+)/);
+  if (m) return m[1];
+  return /^\d+$/.test(line) ? line : null;
+}
+
+function presetActive(p) {
+  return $("#ids").value.split("\n").some((l) => lineCollectionId(l) === p.id);
+}
+
+// Tap a preset → add its link to the box if absent, remove it if already there.
+function togglePreset(p) {
+  const lines = $("#ids").value.split("\n");
+  let next;
+  if (presetActive(p)) {
+    next = lines.filter((l) => lineCollectionId(l) !== p.id);
+  } else {
+    next = lines.filter((l) => l.trim());
+    next.push(presetLink(p));
+  }
+  $("#ids").value = next.join("\n").replace(/^\n+/, "");
+  refreshGo();
+  schedulePreview();
+  refreshPresetStates();
+}
+
+function refreshPresetStates() {
+  $$("#presets .preset").forEach((c) => {
+    const p = PRESETS[+c.dataset.idx];
+    if (!p) return;
+    const on = presetActive(p);
+    c.classList.toggle("added", on);
+    const mark = c.querySelector(".padd");
+    if (mark) mark.textContent = on ? "✓" : "＋";
+  });
+}
+
+function renderPresets() {
+  const box = $("#presets");
+  if (!box) return;
+  box.innerHTML = "";
+  PRESETS.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "preset";
+    b.dataset.idx = i;
+    b.innerHTML =
+      '<span class="padd">＋</span>' +
+      '<span class="pday">' + escapeHtml(p.day) + "</span>" +
+      '<span class="pname">' + escapeHtml(p.name) + "</span>" +
+      '<span class="pcount">' + p.count + " maps · #" + p.id + "</span>";
+    b.onclick = () => togglePreset(p);
+    box.appendChild(b);
+  });
+  refreshPresetStates();
+}
+
+// One-click recommended: load all four, force the per-collection target so each lands
+// in its own same-named lazer collection (no merging), then start the download now.
+function importAllPresets() {
+  if (state.running) return;
+  $("#ids").value = PRESETS.map(presetLink).join("\n");
+  const sel = $("#target");
+  if (sel && state.labels.default_target) {
+    sel.value = state.labels.default_target;
+    onTargetChange();
+  }
+  refreshGo();
+  refreshPresetStates();
+  onGo();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  renderPresets();
+  const all = $("#import-all");
+  if (all) all.onclick = importAllPresets;
+  const ids = $("#ids");
+  if (ids) ids.addEventListener("input", refreshPresetStates);
+});
