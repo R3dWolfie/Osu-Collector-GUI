@@ -26,7 +26,7 @@ Everything else — your osu!lazer binary, `client.realm`, the Collection Manage
 - Live activity log, toasts, and a satisfying finish
 - Cancel button (stops cleanly between beatmaps)
 - Optional `.osdb` generation and consolidation into a single `db/` subfolder
-- **Native installers** for all three OSes (Windows `Setup.exe`, macOS `.dmg`, Linux AppImage) and a **built-in update checker** that one-click installs new releases
+- **Native installer** for **Windows** (`Setup.exe`, bundles the Collection Manager CLI + auto-installs WebView2/.NET if missing) and a **macOS** `.dmg`, with a **built-in update checker** that one-click installs new releases. On **Linux**, [run from source](#linux-run-from-source-recommended) — the reliable path across distros
 
 ## Install (from source)
 
@@ -39,20 +39,27 @@ pip install -r requirements.txt
 python osu_collector_gui.py
 ```
 
-### Linux: pick a webview backend
+### Linux: run from source (recommended)
 
-`pywebview` needs a native webview to render into. Install **one** backend:
+`pywebview` renders into the host's **WebKitGTK**, which is tightly tied to the
+system GObject stack — so on Linux the reliable path is running from source
+against your distro's own libraries. (A bundled AppImage fights newer distros'
+WebKit/GLib; this is a known pywebview-on-Linux limitation.)
 
 ```sh
-# GTK (recommended) — also needs system packages:
-#   Debian/Ubuntu: sudo apt install python3-gi gir1.2-webkit2-4.1
-pip install "pywebview[gtk]"
+# 1. System packages — WebKitGTK + GTK3 + PyGObject:
+#   Arch:          sudo pacman -S webkit2gtk-4.1 gtk3 python-gobject
+#   Debian/Ubuntu: sudo apt install gir1.2-webkit2-4.1 gir1.2-gtk-3.0 python3-gi python3-gi-cairo
+#   Fedora:        sudo dnf install webkit2gtk4.1 gtk3 python3-gobject
 
-# …or Qt:
-pip install "pywebview[qt]"
+# 2. Venv that can see the system GObject bindings, then run:
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python osu_collector_gui.py
 ```
 
-Windows uses the built-in **Edge WebView2** runtime and macOS uses system **WebKit**, so no extra backend is needed there.
+Windows uses the built-in **Edge WebView2** runtime and macOS uses system **WebKit**, so the prebuilt installers there need no extra backend setup.
 
 ## Build standalone binaries (Windows · macOS · Linux)
 
