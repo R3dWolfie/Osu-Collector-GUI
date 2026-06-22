@@ -137,6 +137,7 @@ async function scanCollections() {
   if (res && res.ok && res.collections && res.collections.length) {
     state.collections = res.collections;
     buildTargetOptions($("#target").value);
+    buildExportTargets();
     toast("Found " + res.collections.length + " osu!lazer collection(s)", "ok",
           "// scan complete");
   }
@@ -555,4 +556,48 @@ document.addEventListener("DOMContentLoaded", () => {
   if (all) all.onclick = importAllPresets;
   const ids = $("#ids");
   if (ids) ids.addEventListener("input", refreshPresetStates);
+});
+
+/* --------------------------------------------------------- export tab */
+function buildExportTargets() {
+  const sel = $("#export-target");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const add = (label, value) => {
+    const o = document.createElement("option");
+    o.textContent = label;
+    o.value = value;
+    sel.appendChild(o);
+  };
+  add("All collections", "");
+  state.collections.forEach((c) => add(`${c.name}  (${c.count} maps)`, c.name));
+  if (prev) sel.value = prev;
+}
+
+async function onExport() {
+  const target = $("#export-target").value;          // "" = all collections
+  const fmt = $("#export-format").value || ".db";     // ".db" | ".osdb"
+  const status = $("#export-status");
+  const base = (target || "collections").replace(/[\\/:*?"<>|]+/g, "_");
+  status.textContent = "choose where to save…";
+  const dest = await callApi("choose_save_path", base + fmt);
+  if (!dest) { status.textContent = ""; return; }
+  status.textContent = "exporting…";
+  toast("Exporting…", "", "// export");
+  const r = await callApi("export_to_file", { collection: target, dest });
+  if (r && r.ok) {
+    status.textContent = "saved ✓";
+    toast("Exported to " + r.path, "ok", "// export");
+  } else {
+    status.textContent = "failed";
+    toast((r && r.error) || "Export failed.", "bad", "// export");
+  }
+  setTimeout(() => { status.textContent = ""; }, 4500);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  buildExportTargets();
+  const btn = $("#export-go");
+  if (btn) btn.onclick = onExport;
 });
