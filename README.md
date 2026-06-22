@@ -53,9 +53,11 @@ pip install "pywebview[qt]"
 
 Windows uses the built-in **Edge WebView2** runtime and macOS uses system **WebKit**, so no extra backend is needed there.
 
-## Build a Windows .exe
+## Build standalone binaries (Windows · macOS · Linux)
 
-See [build_windows.md](build_windows.md) — single PyInstaller command.
+See [BUILD.md](BUILD.md). The included GitHub Actions workflow builds all
+three at once on every push/PR; manual per-OS PyInstaller commands are
+documented there too.
 
 ## Linux: add to your application menu
 
