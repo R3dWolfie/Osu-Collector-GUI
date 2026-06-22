@@ -1170,7 +1170,13 @@ class CmCliRunner:
         """
         if sys.platform == "win32":
             home = Path.home()
+            # Highest priority: the copy the installer bundles next to our own
+            # .exe ({app}\cm-cli\). Lets the app work out of the box with no
+            # separate Collection Manager download.
+            bundled = (Path(sys.executable).resolve().parent
+                       / "cm-cli" / "CollectionManager.App.Cli.exe")
             candidates = [
+                bundled,
                 home / "AppData/Local/Programs/Collection Manager/CollectionManager.App.Cli.exe",
                 Path("C:/Program Files/Collection Manager/CollectionManager.App.Cli.exe"),
                 CM_CLI_CACHE_DIR / "CollectionManager.App.Cli.exe",
