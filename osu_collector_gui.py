@@ -2503,7 +2503,43 @@ class JsApi:
             osu_bin = (S.get("osu_binary") or auto["osu_binary"]).strip() or None
 
             no_merge = target_combo_no_merge_label()
-            add_to_lazer = target != no_merge
+            realm_ok = bool(realm and Path(realm).expanduser().exists())
+            merge_wanted = target != no_merge
+            # If the user wants to merge and has a realm but CM CLI wasn't
+            # found, auto-download it so merging works with zero manual setup.
+            # On Windows this is the whole fix; on Linux it still needs the
+            # wine flatpak, so a failure here just falls through to the warning.
+            if merge_wanted and realm_ok and not cm_cmd:
+                try:
+                    CmCliInstaller.install(log_func=lambda s: None)
+                    cm_cmd = _normalize_cm(
+                        _autodetect_paths()["cm_cli_command"]) or None
+                    if cm_cmd:
+                        self._settings["cm_cli_command"] = cm_cmd
+                        try:
+                            _save_settings(self._settings)
+                        except OSError:
+                            pass
+                except Exception:
+                    cm_cmd = None
+            # Merging into lazer's realm needs BOTH Collection Manager CLI and
+            # a real client.realm. If either is missing we still download +
+            # auto-import (which don't need CM CLI), and warn instead of
+            # erroring — that's the behaviour that "just works".
+            add_to_lazer = merge_wanted and bool(cm_cmd) and realm_ok
+            merge_warning = None
+            if merge_wanted and not add_to_lazer:
+                missing = []
+                if not cm_cmd:
+                    missing.append("Collection Manager CLI")
+                if not realm_ok:
+                    missing.append("client.realm")
+                merge_warning = (
+                    "Maps will download and import, but collections won't be "
+                    "merged into osu!lazer — couldn't find "
+                    + " and ".join(missing)
+                    + ". Set the path(s) in Settings → Paths."
+                )
             target_name: str | None = None
             if target == NEW_TARGET:
                 if not new_name:
@@ -2512,6 +2548,12 @@ class JsApi:
                 target_name = new_name
             elif target not in (DEFAULT_TARGET, no_merge):
                 target_name = target  # an existing lazer collection name
+
+            # The merge step reads back the per-collection .osdb files we wrote
+            # this run, so generation MUST be on whenever we merge. The user's
+            # "Generate .osdb" toggle only controls whether they're kept as
+            # standalone export artifacts afterwards.
+            generate_osdb = bool(S.get("generate_osdb", False)) or add_to_lazer
 
             extra_mirrors: list[str] = []
             for line in str(S.get("custom_mirrors", "")).splitlines():
@@ -2524,7 +2566,7 @@ class JsApi:
                 output_dir=out_dir,
                 download_beatmaps=True,
                 extra_mirrors=extra_mirrors,
-                generate_osdb=bool(S.get("generate_osdb", False)),
+                generate_osdb=generate_osdb,
                 auto_import=bool(S.get("auto_import", True)),
                 osu_binary=osu_bin,
                 import_parallel=int(S.get("import_parallel", 1)),
@@ -2559,7 +2601,8 @@ class JsApi:
             self._thread = threading.Thread(target=_run, daemon=True,
                                             name="oc-download")
             self._thread.start()
-            return {"ok": True, "count": len(ids), "output_dir": str(out_dir)}
+            return {"ok": True, "count": len(ids), "output_dir": str(out_dir),
+                    "warning": merge_warning}
 
     def cancel(self) -> bool:
         if self._downloader:

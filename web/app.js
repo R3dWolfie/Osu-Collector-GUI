@@ -207,6 +207,7 @@ async function onGo() {
     toast((res && res.error) || "Couldn't start.", "bad", "// can't start");
     return;
   }
+  if (res.warning) toast(res.warning, "bad", "// heads up");
   state.running = true;
   state.totalCollections = res.count;
   state.lastFile = "";
