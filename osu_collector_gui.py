@@ -168,6 +168,35 @@ class OsuCollectorClient:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
 
+    # Transient statuses worth retrying — osu!collector sits behind Cloudflare
+    # and intermittently 520-524s under load; plus the usual 429/502/503/504.
+    _RETRYABLE = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+
+    def _get(self, url: str, tries: int = 4) -> requests.Response:
+        """GET with exponential backoff on transient osu!collector / Cloudflare
+        errors so one server hiccup doesn't abort the whole run."""
+        delay: float = 1.0
+        last: Exception | None = None
+        for attempt in range(1, tries + 1):
+            try:
+                r = self.session.get(url, timeout=30)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last = e
+            else:
+                if r.status_code not in self._RETRYABLE:
+                    return r
+                last = requests.HTTPError(
+                    f"{r.status_code} Server Error for url: {url}", response=r)
+            if attempt < tries:
+                time.sleep(delay)
+                delay = min(delay * 2, 10.0)
+        # Retries exhausted: hand back the last response so the caller's own
+        # status handling (404 check / raise_for_status) still applies; only a
+        # pure network failure (no response) is raised here.
+        if isinstance(last, requests.HTTPError) and last.response is not None:
+            return last.response
+        raise last if last else RuntimeError(f"GET failed: {url}")
+
     def fetch_collection(self, collection_id: int,
                          with_beatmap_details: bool = False) -> CollectionInfo:
         """Fetch collection metadata + flat list of beatmapset IDs.
@@ -177,7 +206,7 @@ class OsuCollectorClient:
         .osdb generation. Costs extra paginated API calls.
         """
         url = f"{OSU_COLLECTOR_API}/collections/{collection_id}"
-        r = self.session.get(url, timeout=30)
+        r = self._get(url)
         if r.status_code == 404:
             raise ValueError(f"Collection {collection_id} not found")
         r.raise_for_status()
@@ -212,7 +241,7 @@ class OsuCollectorClient:
         for _ in range(500):  # safety bound — most collections fit in <50 pages
             url = (f"{OSU_COLLECTOR_API}/collections/{collection_id}/beatmapsv2"
                    f"?perPage=100&cursor={cursor}")
-            r = self.session.get(url, timeout=30)
+            r = self._get(url)
             r.raise_for_status()
             data = r.json()
             for b in data.get("beatmaps", []) or []:
