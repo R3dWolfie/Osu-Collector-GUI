@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import requests
 
@@ -501,7 +501,8 @@ class BeatmapMirror:
             else:
                 cls._active[url] = n - 1
 
-    def download(self, beatmapset_id: int, dest_dir: Path) -> Path | None:
+    def download(self, beatmapset_id: int, dest_dir: Path,
+                 should_cancel: Callable[[], bool] | None = None) -> Path | None:
         """Download .osz to dest_dir; return final path or None on failure.
 
         Mirror selection combines round-robin, adaptive per-mirror
@@ -535,6 +536,8 @@ class BeatmapMirror:
         deadline = time.monotonic() + DOWNLOAD_OVERALL_DEADLINE_S
 
         while time.monotonic() < deadline:
+            if should_cancel and should_cancel():
+                return None
             if len(exhausted) >= n_mirrors:
                 break   # every mirror 404'd or hard-failed — genuinely gone
 
@@ -586,6 +589,9 @@ class BeatmapMirror:
                     written = 0
                     with open(tmp, "wb") as f:
                         for chunk in r.iter_content(chunk_size=64 * 1024):
+                            if should_cancel and should_cancel():
+                                tmp.unlink(missing_ok=True)
+                                return None
                             if chunk:
                                 if not head:
                                     head = chunk[:4]
@@ -1585,7 +1591,8 @@ class Downloader:
 
     def _download_one(self, set_id: int, col_dir: Path) -> tuple[int, Path | None, str | None]:
         try:
-            path = self.mirror.download(set_id, col_dir)
+            path = self.mirror.download(set_id, col_dir,
+                                        should_cancel=lambda: self._cancelled)
             return set_id, path, None
         except Exception as e:
             return set_id, None, str(e)
@@ -1683,25 +1690,21 @@ class Downloader:
                 set_ids = info.beatmapset_ids
                 workers = max(1, min(32, self.job.download_parallel))
                 done = 0
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    futures = {}
-                    for sid in set_ids:
-                        if sid in skipped_set_ids:
-                            continue
-                        futures[ex.submit(self._download_one, sid, col_dir)] = sid
-                    # Tick the bar for every set already skipped so progress
-                    # accurately reflects total work.
-                    if skipped_set_ids:
-                        done = len(skipped_set_ids & set(set_ids))
-                        skipped = done
-                        self._beatmap_progress(done, len(set_ids))
-                        self._log(
-                            f"  [skip] {skipped} set(s) already imported in lazer"
-                        )
+                # Tick the bar for every set already skipped so progress
+                # accurately reflects total work.
+                if skipped_set_ids:
+                    done = len(skipped_set_ids & set(set_ids))
+                    skipped = done
+                    self._beatmap_progress(done, len(set_ids))
+                    self._log(f"  [skip] {skipped} set(s) already imported in lazer")
+                ex = ThreadPoolExecutor(max_workers=workers)
+                try:
+                    futures = {
+                        ex.submit(self._download_one, sid, col_dir): sid
+                        for sid in set_ids if sid not in skipped_set_ids
+                    }
                     for fut in as_completed(futures):
                         if self._cancelled:
-                            for f in futures:
-                                f.cancel()
                             break
                         done += 1
                         self._beatmap_progress(done, len(set_ids))
@@ -1717,6 +1720,11 @@ class Downloader:
                         ok += 1
                         self._log(f"  [{done}/{len(set_ids)}] {path.name}")
                         self._maybe_import(path)
+                finally:
+                    # On cancel, don't block on in-flight downloads — cancel the
+                    # queued futures and return now; each running download sees
+                    # should_cancel() and bails at its next chunk.
+                    ex.shutdown(wait=not self._cancelled, cancel_futures=True)
             else:
                 # No beatmap download requested. Still emit progress so the
                 # bar finishes.
