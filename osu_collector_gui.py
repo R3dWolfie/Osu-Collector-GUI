@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_AUTHOR = "Red"
 
 
@@ -1099,11 +1099,18 @@ class CmCliRunner:
             dlog.write(f"argv: {shlex.join(argv)}\n")
             dlog.flush()
 
+            run_kwargs: dict = {}
+            if sys.platform == "win32":
+                # CM CLI is a console app; in our --windowed build that would
+                # pop a console window for every invocation. CREATE_NO_WINDOW
+                # keeps it hidden.
+                run_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=600,
                 # Use a proper /dev/null for stdin so .NET doesn't
                 # block trying to read from a tty it doesn't have.
                 stdin=subprocess.DEVNULL,
+                **run_kwargs,
             )
             dlog.write(f"exit: {proc.returncode}\n")
             dlog.write(f"--- stdout ---\n{proc.stdout}\n")
@@ -1467,6 +1474,22 @@ class Downloader:
             and Path(self.job.lazer_realm_path).expanduser().exists()
         )
 
+    def _should_generate_osdb(self) -> bool:
+        """We must write .osdb files when the user asked to export them OR
+        whenever we're merging into a lazer collection — _merge_into_lazer()
+        consumes the .osdb generated this run, so skipping generation here
+        makes the merge silently no-op (the chosen collection never appears)."""
+        return bool(self.job.generate_osdb or self.job.add_to_lazer_collections)
+
+    def _should_fetch_details(self) -> bool:
+        """Per-beatmap details (id + md5) are needed by .osdb generation,
+        the lazer collection merge, and the dedup probe."""
+        return bool(
+            self.job.generate_osdb
+            or self.job.add_to_lazer_collections
+            or self._probe_enabled_for_job()
+        )
+
     def confirm_merge_continue(self) -> None:
         """Called from the GUI thread when the user clicks OK on the
         'did osu!lazer finish importing?' dialog. Releases the worker
@@ -1531,12 +1554,10 @@ class Downloader:
                 break
 
             # The probe and .osdb generation both need per-beatmap details
-            # (beatmap_id + md5). Force the detail fetch when EITHER feature
-            # is on, even if the user didn't tick "generate .osdb".
-            need_details = (
-                self.job.generate_osdb
-                or self._probe_enabled_for_job()
-            )
+            # (beatmap_id + md5). Force the detail fetch when ANY feature
+            # that consumes them is on — incl. merging into a lazer
+            # collection, which reads the .osdb files we generate this run.
+            need_details = self._should_fetch_details()
             try:
                 info = self.api.fetch_collection(cid, with_beatmap_details=need_details)
             except Exception as e:
@@ -1587,7 +1608,7 @@ class Downloader:
             skipped = 0
 
             # --- generate .osdb (independent of beatmap downloads) ---
-            if self.job.generate_osdb:
+            if self._should_generate_osdb():
                 try:
                     osdb_path = col_dir / f"{safe_name}.osdb"
                     OsdbWriter.write(osdb_path, info,

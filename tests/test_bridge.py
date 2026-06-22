@@ -84,3 +84,31 @@ def test_start_rejects_when_no_ids():
     res = api.start({"ids_text": "garbage", "settings": {}})
     assert res["ok"] is False
     assert "No valid" in res["error"]
+
+
+def _job(**kw):
+    base = dict(collection_ids=[1], output_dir=g.Path("/tmp"))
+    base.update(kw)
+    return g.DownloadJob(**base)
+
+
+def test_merge_target_forces_osdb_generation():
+    # Regression: merging into a lazer collection must generate .osdb even
+    # when the user left "generate .osdb" off — otherwise _merge_into_lazer
+    # silently no-ops and the chosen collection is never created.
+    d = g.Downloader(_job(generate_osdb=False, add_to_lazer_collections=True),
+                     lambda n, p: None)
+    assert d._should_generate_osdb() is True
+    assert d._should_fetch_details() is True
+
+
+def test_no_merge_no_export_means_no_osdb():
+    d = g.Downloader(_job(generate_osdb=False, add_to_lazer_collections=False),
+                     lambda n, p: None)
+    assert d._should_generate_osdb() is False
+
+
+def test_explicit_export_still_generates_osdb():
+    d = g.Downloader(_job(generate_osdb=True, add_to_lazer_collections=False),
+                     lambda n, p: None)
+    assert d._should_generate_osdb() is True
