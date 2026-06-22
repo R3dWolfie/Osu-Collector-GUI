@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] — 2026-06-22
+
+### Fixed
+
+- **Auto-update loop.** The v1.0.1 installers were built from a commit that
+  still reported `APP_VERSION = "1.0.0"`, so the in-app updater saw the v1.0.1
+  release as newer than itself and re-prompted to update forever. Re-released
+  with the version string corrected and the tag cut from the bumped commit.
+
 ## [1.0.1] — 2026-06-22
 
 ### Fixed
