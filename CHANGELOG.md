@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] — 2026-06-22
+
+### Fixed
+
+- **Cancel is instant.** It no longer waits for in-flight downloads to finish —
+  running downloads bail mid-stream and the worker pool returns immediately.
+- **Resilient to osu!collector hiccups.** API calls now retry transient
+  Cloudflare 5xx / 520–524 errors with backoff instead of aborting the whole run.
+- **AppImage menu icon** installs into the icon theme path, so desktop menus
+  show the R3D logo instead of a generic document icon.
+
+### Changed
+
+- **Bigger UI** — a global 1.25× scale makes text and buttons readable on
+  high-DPI displays; preset collection name + map count are now white and larger.
+
 ## [1.1.0] — 2026-06-22
 
 ### Added
