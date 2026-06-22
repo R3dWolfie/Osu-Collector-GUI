@@ -88,6 +88,8 @@ jobs:
           if (-not (Test-Path "deps\cm-cli\CollectionManager.App.Cli.exe")) { throw "CM CLI not unpacked" }
           Write-Host "Fetching Edge WebView2 bootstrapper..."
           Invoke-WebRequest -UseBasicParsing -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile deps\MicrosoftEdgeWebview2Setup.exe
+          Write-Host "Fetching .NET Framework 4.8 web installer..."
+          Invoke-WebRequest -UseBasicParsing -Uri "https://go.microsoft.com/fwlink/?LinkId=2085155" -OutFile deps\ndp48-web.exe
           & $iscc "/DAppVersion=$ver" packaging\windows-installer.iss
           if (-not (Test-Path "Output\osu-collector-gui-Setup.exe")) {
             throw "installer not produced"
