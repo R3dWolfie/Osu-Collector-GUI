@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=osu!collector-gui
+GenericName=Beatmap Collection Downloader
+Comment=Download osu!collector collections into osu!
+Exec=osu-collector-gui
+Icon=osu-collector-gui
+Categories=Game;Network;
+Terminal=false

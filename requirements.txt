@@ -1,3 +1,9 @@
-PyQt6>=6.5
+pywebview>=5.0
 requests>=2.28
 psutil>=5.9
+
+# Linux only: pywebview needs a webview backend. Install ONE of:
+#   GTK:  pip install "pywebview[gtk]"   (plus system: gir1.2-webkit2-4.1, python3-gi)
+#   Qt:   pip install "pywebview[qt]"
+# Windows: uses the built-in Edge WebView2 runtime (present on Win10/11).
+# macOS:   uses the system WebKit (no extra deps).
