@@ -2596,6 +2596,17 @@ class JsApi:
         cmd = _normalize_cm(cm_value) or _normalize_cm(auto["cm_cli_command"])
         if not realm or not Path(realm).expanduser().exists():
             return {"ok": False, "reason": "no_realm"}
+        if not cmd and (sys.platform == "win32"
+                        or shutil.which("flatpak") or shutil.which("wine")):
+            # Auto-provision the CM CLI (download it) so existing collections
+            # list on open — not only after a merge run. On Linux it still needs
+            # a wine to run through; if there's none, detection stays empty.
+            try:
+                if not CmCliInstaller.installed_exe():
+                    CmCliInstaller.install(log_func=lambda s: None)
+                cmd = _normalize_cm(_autodetect_paths()["cm_cli_command"])
+            except Exception:
+                pass
         if not cmd:
             return {"ok": False, "reason": "no_cm"}
         try:

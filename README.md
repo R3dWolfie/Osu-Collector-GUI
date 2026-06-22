@@ -61,6 +61,21 @@ python osu_collector_gui.py
 
 Windows uses the built-in **Edge WebView2** runtime and macOS uses system **WebKit**, so the prebuilt installers there need no extra backend setup.
 
+#### Reading / merging osu!lazer collections on Linux (optional)
+
+Downloads and auto-import work with just the steps above. **Listing your existing
+lazer collections and merging into them** is done by the Collection Manager CLI —
+a Windows **.NET 9** tool — which on Linux runs through the WineHQ flatpak. Run the
+bundled setup once; it installs the flatpak + the .NET 9 runtime and grants it
+access to your osu! data:
+
+```sh
+scripts/setup-linux.sh            # or: scripts/setup-linux.sh /path/to/osu/data
+```
+
+Then launch the app and your collections appear in the import dropdown. (On
+Windows the installer handles all of this automatically.)
+
 ## Build standalone binaries (Windows · macOS · Linux)
 
 See [BUILD.md](BUILD.md). The included GitHub Actions workflow builds all
