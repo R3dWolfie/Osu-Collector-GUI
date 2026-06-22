@@ -372,6 +372,21 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 900;
 .tune-row .meta .t { font-weight: 500; }
 .tune-row .meta .d { font-size: 12px; color: var(--secondary); }
 
+/* speed presets — quick chips above the manual tuning fields */
+.tune-presets { display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; margin-bottom: 6px; }
+.tune-preset { display: flex; flex-direction: column; gap: 3px;
+  align-items: flex-start; text-align: left; cursor: pointer; font: inherit;
+  padding: 11px 13px; border: 1px solid var(--divider); border-radius: var(--r-md);
+  background: var(--card); color: var(--primary); transition: all .14s ease; }
+.tune-preset:hover { background: var(--card-hover); border-color: var(--red-500); }
+.tune-preset.active { border-color: var(--red-500);
+  background: color-mix(in srgb, var(--red-500) 16%, var(--card)); }
+.tune-preset .tp-name { font-family: var(--font-mono); font-size: 14px;
+  font-weight: 600; color: var(--primary); }
+.tune-preset .tp-sub { font-size: 11px; color: var(--secondary); }
+.tune-preset.active .tp-sub { color: var(--primary); }
+
 .detect-line { display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
   font-family: var(--font-mono); font-size: 12px; color: var(--secondary); }
 .detect-line .path { color: var(--primary); word-break: break-all; }

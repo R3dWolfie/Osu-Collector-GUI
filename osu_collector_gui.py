@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 APP_AUTHOR = "Red"
 
 
@@ -88,8 +88,12 @@ NO_VIDEO_TEMPLATES = {
 MIRROR_DEAD_TTL_S = 60
 
 # Network limits — be polite to the mirrors
-DOWNLOAD_PARALLEL = 48  # default worker threads; the per-mirror adaptive
-                        # caps below are the real governor on concurrency
+DOWNLOAD_PARALLEL = 16  # default worker threads (Balanced). Gentler than the
+                        # old 48 so an average PC doesn't get hammered while
+                        # downloading; the "Max speed" tuning preset bumps it
+                        # back up. Download executor is hard-clamped to 32
+                        # workers regardless; per-mirror adaptive caps below
+                        # are the real governor on concurrency.
 DOWNLOAD_TIMEOUT_S = 120
 DOWNLOAD_CONNECT_TIMEOUT_S = 10   # fail fast if a mirror is rate-limiting our IP
 HTTP_RETRIES = 3

@@ -82,6 +82,7 @@ function applyState(st) {
   setVal("download_parallel", s.download_parallel);
   setVal("import_parallel", s.import_parallel);
   setVal("import_delay_ms", s.import_delay_ms);
+  refreshTunePresetActive();
   setVal("osu_binary", s.osu_binary);
   setVal("lazer_realm_path", s.lazer_realm_path);
   setVal("cm_cli_command", s.cm_cli_command);
@@ -192,7 +193,7 @@ function collectSettings() {
     generate_osdb: $("#generate_osdb").checked,
     consolidate_osdb: $("#consolidate_osdb").checked,
     cleanup_after_import: $("#cleanup_after_import").checked,
-    download_parallel: parseInt($("#download_parallel").value || "24", 10),
+    download_parallel: parseInt($("#download_parallel").value || "16", 10),
     import_parallel: parseInt($("#import_parallel").value || "1", 10),
     import_delay_ms: parseInt($("#import_delay_ms").value || "0", 10),
     osu_binary: $("#osu_binary").value,
@@ -200,6 +201,57 @@ function collectSettings() {
     cm_cli_command: $("#cm_cli_command").value,
     custom_mirrors: $("#custom_mirrors").value,
   };
+}
+
+/* ---------------------------------------------------- tuning speed presets */
+// Each preset sets the three tuning fields. "Max speed" stops at 32 because
+// the download executor is hard-clamped to 32 workers (higher does nothing).
+const TUNE_PRESETS = {
+  gentle:   { download_parallel: 6,  import_parallel: 1, import_delay_ms: 100 },
+  balanced: { download_parallel: 16, import_parallel: 1, import_delay_ms: 0 },
+  maxspeed: { download_parallel: 32, import_parallel: 1, import_delay_ms: 0 },
+};
+
+// Highlight the chip whose values match the current fields (or none).
+function refreshTunePresetActive() {
+  const cur = {
+    download_parallel: parseInt($("#download_parallel").value || "0", 10),
+    import_parallel: parseInt($("#import_parallel").value || "0", 10),
+    import_delay_ms: parseInt($("#import_delay_ms").value || "0", 10),
+  };
+  $$("#tune-presets .tune-preset").forEach((btn) => {
+    const p = TUNE_PRESETS[btn.dataset.preset];
+    const match = p && p.download_parallel === cur.download_parallel
+      && p.import_parallel === cur.import_parallel
+      && p.import_delay_ms === cur.import_delay_ms;
+    btn.classList.toggle("active", !!match);
+  });
+}
+
+// Apply a preset to the fields, reflect it, and persist immediately.
+async function applyTunePreset(name) {
+  const p = TUNE_PRESETS[name];
+  if (!p) return;
+  setVal("download_parallel", p.download_parallel);
+  setVal("import_parallel", p.import_parallel);
+  setVal("import_delay_ms", p.import_delay_ms);
+  refreshTunePresetActive();
+  await saveSettings();
+}
+
+// Save the settings panel (shared by the Save button + the speed presets).
+async function saveSettings() {
+  const r = await callApi("save_settings", {
+    output_dir: $("#output").value,
+    target: $("#target").value,
+    new_collection_name: $("#new-name").value,
+    settings: collectSettings(),
+  });
+  const st = $("#save-status");
+  if (r && r.ok) { st.textContent = "saved ✓"; if (r.state) renderDetected(r.state.detected || {}); }
+  else st.textContent = "save failed";
+  setTimeout(() => (st.textContent = ""), 2500);
+  return r;
 }
 
 function refreshGo() {
@@ -419,18 +471,15 @@ function wireStaticUi() {
   $("#dock-cancel").onclick = () => { callApi("cancel"); toast("Cancelling…", "", "// cancel"); };
   $("#open-folder").onclick = () => callApi("open_folder", $("#output").value);
 
-  $("#save-settings").onclick = async () => {
-    const r = await callApi("save_settings", {
-      output_dir: $("#output").value,
-      target: $("#target").value,
-      new_collection_name: $("#new-name").value,
-      settings: collectSettings(),
-    });
-    const st = $("#save-status");
-    if (r && r.ok) { st.textContent = "saved ✓"; if (r.state) renderDetected(r.state.detected || {}); }
-    else st.textContent = "save failed";
-    setTimeout(() => (st.textContent = ""), 2500);
-  };
+  $("#save-settings").onclick = () => saveSettings();
+
+  $$("#tune-presets .tune-preset").forEach((btn) => {
+    btn.onclick = () => applyTunePreset(btn.dataset.preset);
+  });
+  ["download_parallel", "import_parallel", "import_delay_ms"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.addEventListener("input", refreshTunePresetActive);
+  });
 
   $("#browse-output").onclick = async () => {
     const p = await callApi("choose_folder", $("#output").value);

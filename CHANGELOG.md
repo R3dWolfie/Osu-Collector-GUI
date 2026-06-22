@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] — 2026-06-22
+
+### Changed
+
+- **Gentler default download concurrency.** Parallel downloads now defaults to
+  **16** (was 48) so an average PC doesn't get bogged down — high parallelism
+  plus live auto-import can saturate disk/CPU on slower machines during a run.
+
+### Added
+
+- **Speed presets in Settings → Tuning.** One-click **Gentle** (6 workers, low
+  PC impact), **Balanced** (16, default), and **Max speed** (32 — the real cap;
+  the download executor is clamped to 32 regardless) chips set the tuning fields
+  and save immediately. The chip matching your current values is highlighted.
+
 ## [1.3.1] — 2026-06-22
 
 ### Changed
