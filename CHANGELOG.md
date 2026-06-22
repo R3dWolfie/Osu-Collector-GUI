@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] — 2026-06-22
+
+### Fixed
+
+- **App no longer lingers as a background process after the window is closed.**
+  Non-daemon download/import worker threads kept Python alive at exit; closing
+  the window now cancels any running job and exits the process immediately.
+
 ## [1.1.3] — 2026-06-22
 
 ### Fixed
