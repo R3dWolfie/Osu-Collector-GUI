@@ -73,6 +73,7 @@ function applyState(st) {
   $("#output").value = st.output_dir || "";
   const s = st.settings || {};
   setCheck("auto_import", s.auto_import);
+  setCheck("skip_video", s.skip_video);
   setCheck("skip_already_imported", s.skip_already_imported);
   setCheck("restart_lazer_after", s.restart_lazer_after);
   setCheck("generate_osdb", s.generate_osdb);
@@ -184,6 +185,7 @@ async function runPreview() {
 function collectSettings() {
   return {
     auto_import: $("#auto_import").checked,
+    skip_video: $("#skip_video").checked,
     skip_already_imported: $("#skip_already_imported").checked,
     restart_lazer_after: $("#restart_lazer_after").checked,
     generate_osdb: $("#generate_osdb").checked,
