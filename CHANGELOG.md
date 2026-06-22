@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] — 2026-06-22
+
+### Fixed
+
+- **Installer no longer hangs on "Closing applications."** The updater used the
+  Restart Manager's graceful close, which waits forever on a WebView2 window;
+  it now force-closes the app being replaced (`CloseApplications=force`).
+- **Light mode fixed.** Preset cards used hardcoded white text (invisible on
+  light-mode's white cards); switched to theme-aware colours that read in both
+  themes.
+- **Preset map count** is now larger and higher-contrast (was a dim grey).
+
 ## [1.1.1] — 2026-06-22
 
 ### Fixed
