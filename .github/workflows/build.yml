@@ -123,26 +123,57 @@ jobs:
       - name: Build AppImage (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -e
           pyinstaller --noconfirm --windowed \
             --name osu-collector-gui \
             --add-data "web:web" \
             osu_collector_gui.py
           test -d "dist/osu-collector-gui" || { echo "no onedir build"; exit 1; }
-          mkdir -p AppDir/usr/bin
-          cp -r dist/osu-collector-gui/. AppDir/usr/bin/
-          cp packaging/AppRun AppDir/AppRun
-          chmod +x AppDir/AppRun
-          cp packaging/osu-collector-gui.desktop AppDir/osu-collector-gui.desktop
-          cp packaging/icon-256.png AppDir/osu-collector-gui.png
-          # Also install into the hicolor theme path so desktop-integration tools
-          # (AppImageLauncher, AppImagePool, GNOME/KDE) can extract the icon for
-          # the app-menu entry — the root .DirIcon alone isn't enough for them.
-          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-          cp packaging/icon-256.png AppDir/usr/share/icons/hicolor/256x256/apps/osu-collector-gui.png
-          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x appimagetool
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          ./appimagetool AppDir dist/osu-collector-gui-x86_64.AppImage
+
+          ARCHLIB=/usr/lib/x86_64-linux-gnu
+          APPDIR="$PWD/AppDir"
+          mkdir -p "$APPDIR/usr/bin" \
+                   "$APPDIR/usr/lib/girepository-1.0" \
+                   "$APPDIR/usr/lib/webkit2gtk-4.1" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/apprun-hooks"
+          cp -r dist/osu-collector-gui/. "$APPDIR/usr/bin/"
+          cp packaging/icon-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/osu-collector-gui.png"
+          cp packaging/osu-collector-gui.desktop "$APPDIR/usr/share/applications/osu-collector-gui.desktop"
+
+          # WebKit2GTK is loaded at runtime via GObject-Introspection, so bundle
+          # its GI typelibs + out-of-process helper binaries explicitly —
+          # linuxdeploy can't see this dynamic dependency from the PyInstaller exe.
+          cp "$ARCHLIB/girepository-1.0/WebKit2-4.1.typelib" \
+             "$ARCHLIB/girepository-1.0/JavaScriptCore-4.1.typelib" \
+             "$APPDIR/usr/lib/girepository-1.0/"
+          cp -r "$ARCHLIB/webkit2gtk-4.1/." "$APPDIR/usr/lib/webkit2gtk-4.1/"
+
+          # Runtime env (sourced by linuxdeploy's AppRun) so WebKit finds its
+          # bundled helpers, libs and typelibs instead of the host's.
+          {
+            echo 'export WEBKIT_EXEC_PATH="$APPDIR/usr/lib/webkit2gtk-4.1"'
+            echo 'export WEBKIT_INJECTED_BUNDLE_PATH="$APPDIR/usr/lib/webkit2gtk-4.1/injected-bundle"'
+            echo 'export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"'
+            echo 'export GI_TYPELIB_PATH="$APPDIR/usr/lib/girepository-1.0:$GI_TYPELIB_PATH"'
+          } > "$APPDIR/apprun-hooks/osu-collector-webkit.sh"
+
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh -O linuxdeploy-plugin-gtk.sh
+          chmod +x linuxdeploy linuxdeploy-plugin-gtk.sh
+          export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 DEPLOY_GTK_VERSION=3
+          export OUTPUT=osu-collector-gui-x86_64.AppImage
+          ./linuxdeploy \
+            --appdir "$APPDIR" \
+            --executable "$APPDIR/usr/bin/osu-collector-gui" \
+            --library "$ARCHLIB/libwebkit2gtk-4.1.so.0" \
+            --library "$ARCHLIB/libjavascriptcoregtk-4.1.so.0" \
+            --plugin gtk \
+            --icon-file packaging/icon-256.png \
+            --desktop-file "$APPDIR/usr/share/applications/osu-collector-gui.desktop" \
+            --output appimage
+          mv osu-collector-gui-x86_64.AppImage dist/osu-collector-gui-x86_64.AppImage
           test -f "dist/osu-collector-gui-x86_64.AppImage" || { echo "no AppImage"; exit 1; }
 
       # ============================== UPLOAD ===============================
