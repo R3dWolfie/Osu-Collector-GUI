@@ -109,6 +109,14 @@ CM_CLI_RELEASE_URL = (
     "download/CollectionManager-CLI.zip"
 )
 
+# This app's own GitHub repo — used by the built-in update checker, which
+# compares APP_VERSION against the latest published Release.
+GITHUB_REPO = "R3dWolfie/Osu-Collector-GUI"
+GITHUB_LATEST_RELEASE_API = (
+    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+)
+GITHUB_RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+
 # ---------------------------------------------------------------------------
 # osu!collector API client
 # ---------------------------------------------------------------------------
@@ -2262,6 +2270,52 @@ def _open_in_file_manager(path: Path) -> None:
         pass
 
 
+def _version_tuple(s: str) -> tuple[int, ...]:
+    """Parse a dotted version like '1.2.0' (leading v/V stripped) into a
+    comparable tuple of ints; non-numeric parts are ignored."""
+    parts: list[int] = []
+    for chunk in str(s).lstrip("vV").split("."):
+        num = re.match(r"\d+", chunk.strip())
+        if not num:
+            break
+        parts.append(int(num.group()))
+    return tuple(parts)
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    lt, ct = _version_tuple(latest), _version_tuple(current)
+    return bool(lt) and lt > ct
+
+
+def _pick_release_asset(assets: list, platform: str) -> str:
+    """Choose the right downloadable asset for this OS from a GitHub release."""
+    def find(suffixes: tuple[str, ...]) -> str:
+        for a in assets:
+            name = str(a.get("name") or "").lower()
+            if name.endswith(suffixes):
+                return a.get("browser_download_url") or ""
+        return ""
+    if platform == "win32":
+        return find(("setup.exe", ".exe"))
+    if platform == "darwin":
+        return find((".dmg",))
+    return find((".appimage",))
+
+
+def _launch_updater(path: Path) -> None:
+    """Run a freshly-downloaded installer/update artifact."""
+    if sys.platform == "win32":
+        os.startfile(str(path))  # type: ignore[attr-defined]  # runs Setup.exe
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])  # mounts the .dmg
+    else:
+        try:
+            os.chmod(path, 0o755)
+        except OSError:
+            pass
+        subprocess.Popen([str(path)], start_new_session=True)  # AppImage
+
+
 class JsApi:
     """The object pywebview exposes to JavaScript as window.pywebview.api.
 
@@ -2603,6 +2657,58 @@ class JsApi:
             self._thread.start()
             return {"ok": True, "count": len(ids), "output_dir": str(out_dir),
                     "warning": merge_warning}
+
+    # ----- updates ---------------------------------------------------------
+
+    def check_update(self) -> dict:
+        """Query GitHub Releases; report whether a newer version is published."""
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                GITHUB_LATEST_RELEASE_API,
+                headers={"User-Agent": USER_AGENT,
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return {"update": False}
+        tag = str(data.get("tag_name") or "")
+        if not _is_newer(tag, APP_VERSION):
+            return {"update": False, "latest": tag.lstrip("vV")}
+        return {
+            "update": True,
+            "latest": tag.lstrip("vV"),
+            "url": data.get("html_url") or GITHUB_RELEASES_PAGE,
+            "download_url": _pick_release_asset(data.get("assets") or [],
+                                                sys.platform),
+            "notes": (data.get("body") or "")[:600],
+        }
+
+    def apply_update(self, download_url: str = "") -> dict:
+        """Download the platform installer and launch it; if no direct asset
+        is available, open the releases page in the browser instead."""
+        if not download_url:
+            try:
+                import webbrowser
+                webbrowser.open(GITHUB_RELEASES_PAGE)
+            except Exception:
+                pass
+            return {"ok": True, "opened": "page"}
+        try:
+            import urllib.request
+            import tempfile
+            name = download_url.split("/")[-1] or "osu-collector-gui-update"
+            dest = Path(tempfile.gettempdir()) / name
+            req = urllib.request.Request(
+                download_url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=300) as r, \
+                    open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            _launch_updater(dest)
+            return {"ok": True, "path": str(dest)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def cancel(self) -> bool:
         if self._downloader:

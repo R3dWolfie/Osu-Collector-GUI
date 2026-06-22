@@ -57,6 +57,28 @@ def test_downloader_emits_through_callback():
     assert events[2][1]["name"] == "Pool"
 
 
+def test_version_tuple_and_compare():
+    assert g._version_tuple("v1.2.3") == (1, 2, 3)
+    assert g._version_tuple("2.0") == (2, 0)
+    assert g._is_newer("1.1.0", "1.0.0") is True
+    assert g._is_newer("1.0.1", "1.0.0") is True
+    assert g._is_newer("1.0.0", "1.0.0") is False
+    assert g._is_newer("0.9.9", "1.0.0") is False
+    assert g._is_newer("garbage", "1.0.0") is False
+
+
+def test_pick_release_asset_per_platform():
+    assets = [
+        {"name": "osu-collector-gui-Setup.exe", "browser_download_url": "win"},
+        {"name": "osu-collector-gui.dmg", "browser_download_url": "mac"},
+        {"name": "osu-collector-gui-x86_64.AppImage", "browser_download_url": "lin"},
+    ]
+    assert g._pick_release_asset(assets, "win32") == "win"
+    assert g._pick_release_asset(assets, "darwin") == "mac"
+    assert g._pick_release_asset(assets, "linux") == "lin"
+    assert g._pick_release_asset([], "win32") == ""
+
+
 def test_start_rejects_when_no_ids():
     api = g.JsApi()
     res = api.start({"ids_text": "garbage", "settings": {}})

@@ -49,6 +49,19 @@ async function init() {
   applyState(st);
   // Auto-scan the osu! folder for existing collections (no button needed).
   scanCollections();
+  // Quietly check GitHub for a newer release.
+  checkUpdate();
+}
+
+async function checkUpdate() {
+  let r;
+  try { r = await api.check_update(); } catch (e) { return; }
+  if (r && r.update) {
+    state.update = r;
+    const p = $("#update-pill");
+    p.textContent = "⬆ Update to v" + r.latest;
+    p.classList.remove("hidden");
+  }
 }
 
 /* --------------------------------------------------------- apply state */
@@ -385,6 +398,17 @@ function toggleTheme() {
 /* ----------------------------------------------------------- static wiring */
 function wireStaticUi() {
   $("#theme-toggle").onclick = toggleTheme;
+  $("#update-pill").onclick = async () => {
+    toast("Downloading update…", "", "// update");
+    const r = await callApi("apply_update",
+      (state.update && state.update.download_url) || "");
+    if (r && r.ok && r.opened === "page")
+      toast("Opened the releases page in your browser.", "ok", "// update");
+    else if (r && r.ok)
+      toast("Installer launched — close this app to finish updating.", "ok", "// update");
+    else
+      toast((r && r.error) || "Update failed.", "bad", "// update");
+  };
   $$(".nav-item").forEach((b) => (b.onclick = () => switchView(b.dataset.view)));
   $("#ids").addEventListener("input", () => { refreshGo(); schedulePreview(); });
   $("#target").addEventListener("change", onTargetChange);

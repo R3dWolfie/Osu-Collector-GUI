@@ -26,6 +26,7 @@ Everything else — your osu!lazer binary, `client.realm`, the Collection Manage
 - Live activity log, toasts, and a satisfying finish
 - Cancel button (stops cleanly between beatmaps)
 - Optional `.osdb` generation and consolidation into a single `db/` subfolder
+- **Native installers** for all three OSes (Windows `Setup.exe`, macOS `.dmg`, Linux AppImage) and a **built-in update checker** that one-click installs new releases
 
 ## Install (from source)
 

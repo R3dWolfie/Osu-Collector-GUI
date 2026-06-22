@@ -29,11 +29,22 @@ to `main`, every PR, and on demand:
 1. Push your branch / open a PR, **or** go to the **Actions** tab → *Build
    (Windows · macOS · Linux)* → **Run workflow**.
 2. When it finishes, download the artifacts from the run:
-   - `osu-collector-gui-windows` → `osu-collector-gui.exe`
-   - `osu-collector-gui-macos` → `osu-collector-gui-macos.zip` (a `.app`)
-   - `osu-collector-gui-linux` → `osu-collector-gui` (ELF binary)
+   - `osu-collector-gui-windows-setup` → `osu-collector-gui-Setup.exe` (Inno installer)
+   - `osu-collector-gui-macos-dmg` → `osu-collector-gui.dmg`
+   - `osu-collector-gui-linux-appimage` → `osu-collector-gui-x86_64.AppImage`
 3. Tagging a release (`git tag v1.0.0 && git push --tags`) additionally
-   publishes all three to a GitHub **Release**.
+   publishes all three to a GitHub **Release** — which is also what the app's
+   built-in update checker reads (see *Auto-update* below).
+
+## Auto-update
+
+On launch the app calls the GitHub Releases API, compares the latest tag to
+its own `APP_VERSION`, and — if a newer version exists — shows an **"⬆ Update
+to vX"** pill in the top bar. Clicking it downloads the right installer for
+the current OS (Setup.exe / .dmg / .AppImage) and launches it; the Windows
+installer is built with `CloseApplications=yes` so it can replace the running
+exe. Releases must therefore be **tagged `vX.Y.Z` matching `APP_VERSION`** and
+carry the three installer assets (the workflow attaches them automatically).
 
 ---
 

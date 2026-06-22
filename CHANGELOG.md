@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Native installers for all three platforms**, built in CI and attached to
+  tagged releases: Windows `Setup.exe` (Inno Setup — Start-Menu shortcut +
+  uninstaller), macOS `.dmg`, and a Linux **AppImage**.
+- **Built-in update checker.** On launch the app compares its version against
+  the latest GitHub Release and shows an "⬆ Update to vX" pill; clicking it
+  downloads the right installer for the OS and launches it.
+
+### Fixed
+
+- **Merging into an osu!lazer collection silently did nothing** unless the
+  "Generate .osdb" toggle was on. The merge step reads back the per-collection
+  `.osdb` files, so generation is now forced whenever a merge is requested.
+- Merge now runs only when **both** Collection Manager CLI and `client.realm`
+  are present; otherwise the app still downloads + auto-imports and shows a
+  clear warning instead of failing. Collection Manager CLI is auto-downloaded
+  when a merge is wanted but it isn't installed (zero-setup merge on Windows).
+- Linux CI build (PyGObject/pycairo needed cairo + pkg-config headers).
+
 ## [1.0.0] — 2026-06-22
 
 The complete redesign. The Qt UI is gone; the app now renders an HTML/CSS/JS
