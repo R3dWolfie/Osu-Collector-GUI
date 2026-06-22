@@ -7,7 +7,10 @@
 #endif
 
 [Setup]
-AppId={{B7B3E4B2-0C2E-4D7A-9E2E-OSUCOLLECTOR01}}
+; All relative paths below resolve from SourceDir. The .iss lives in
+; packaging/, so ".." points at the repo root — where dist\ and Output\ live.
+SourceDir=..
+AppId={{B7B3E4B2-0C2E-4D7A-9E2E-7A1C0F3D5E92}}
 AppName=osu!collector-gui
 AppVersion={#AppVersion}
 AppPublisher=Red
