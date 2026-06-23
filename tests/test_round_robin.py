@@ -22,6 +22,19 @@ def test_next_start_increments_and_resets():
     assert BeatmapMirror._next_start() == 0
 
 
+def test_skips_already_downloaded_without_hitting_mirror(tmp_path):
+    """A set whose .osz is already on disk is returned without any mirror
+    request — so re-runs don't re-download or re-trip rate limits."""
+    BeatmapMirror.reset_state()
+    m = BeatmapMirror()
+    m.session = MagicMock()
+    m.session.get.side_effect = AssertionError("must not hit a mirror")
+    existing = tmp_path / "12345 Artist - Title.osz"
+    existing.write_bytes(VALID_OSZ)
+    assert m.download(12345, tmp_path) == existing
+    m.session.get.assert_not_called()
+
+
 def test_sequential_downloads_rotate_mirrors(tmp_path):
     BeatmapMirror.reset_state()
     m = BeatmapMirror()

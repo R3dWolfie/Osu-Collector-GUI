@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.5] — 2026-06-23
+
+### Fixed
+
+- **Retry no longer looks stuck / double-runs.** A leftover summary line made
+  the retry log a second `[retry]` ("spaced rounds") that read like a second
+  pass, and the retry itself wasn't time-bounded so it could drag for minutes
+  on a heavily rate-limited collection. Now it's a single, **time-boxed ~20s**
+  retry (no long cooldown): re-attempt the failed sets, and whatever hasn't
+  come through in 20s is skipped.
+- **Already-downloaded maps are skipped without a mirror request.** `download()`
+  now checks the output folder for an existing `.osz` (`{id}.osz` / `{id} …osz`)
+  *before* contacting any mirror, so re-running a collection doesn't re-download
+  or re-trip rate limits on maps you already have.
+
 ## [1.5.4] — 2026-06-23
 
 ### Changed

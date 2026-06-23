@@ -24,7 +24,8 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +39,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 APP_AUTHOR = "Red"
 
 
@@ -558,6 +559,18 @@ class BeatmapMirror:
         without tripping rate limits.
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Already downloaded on a previous run? Skip WITHOUT hitting a mirror —
+        # saves re-requesting (and re-tripping rate limits) for maps already on
+        # disk. .osz files are named "{set_id}.osz" or "{set_id} Artist - Title
+        # .osz", so match the id followed by "." or " " (avoids matching a
+        # longer id with the same prefix).
+        sid = str(beatmapset_id)
+        for p in dest_dir.glob(f"{sid}*.osz"):
+            rest = p.name[len(sid):]
+            if (rest == ".osz" or rest.startswith(" ")) and p.stat().st_size > 0:
+                return p
+
         last_error: Exception | None = None
         # Mirrors permanently out for THIS set: a 404 (not hosted here) or a
         # hard connection failure. Distinct from the transient at-cap /
@@ -1787,66 +1800,50 @@ class Downloader:
 
                 if absent:
                     self._log(f"  [skip] {absent} set(s) not hosted on any mirror")
-                if failed_ids and not self._cancelled:
-                    self._log(
-                        f"  [retry] {len(failed_ids)} set(s) hit mirror rate "
-                        "limits — retrying in spaced rounds (this is normal for "
-                        "big collections; the maps aren't lost)"
-                    )
 
-                # --- single retry pass for transient failures ---
-                # Sets that failed on mirror rate-limits get ONE short retry:
-                # a 20s cooldown so the per-IP windows partially reset, one more
-                # attempt, then skip whatever's still failing rather than make
-                # the user wait through escalating rounds. Re-running the
-                # collection later picks up the stragglers. (404-everywhere sets
-                # aren't here — they're counted as 'absent', not retried.)
+                # --- one time-boxed retry for rate-limited failures ---
+                # Reset the mirror cooldowns from this pass and re-attempt the
+                # failed sets, but cap the whole thing at ~20s: whatever hasn't
+                # come through by then is skipped (no long waiting). Re-running
+                # the collection later grabs the stragglers — and already-
+                # downloaded files are skipped without even hitting a mirror.
                 if failed_ids and not self._cancelled:
-                    wait_s = 20
-                    self._prep(
-                        f"Mirrors rate-limited {len(failed_ids)} map(s); cooling "
-                        f"down {wait_s}s then one retry…",
-                        title=f"Retrying {len(failed_ids)} rate-limited map(s)…",
-                    )
+                    retrying = failed_ids
+                    failed_ids = []
                     self._log(
-                        f"  [retry] {len(failed_ids)} set(s) hit mirror rate "
-                        f"limits; waiting {wait_s}s then retrying once"
+                        f"  [retry] re-attempting {len(retrying)} rate-limited "
+                        "set(s) for ~20s, then skipping the rest"
                     )
-                    for _ in range(wait_s * 5):   # interruptible sleep
-                        if self._cancelled:
-                            break
-                        time.sleep(0.2)
-                    if not self._cancelled:
-                        BeatmapMirror.reset_state()   # fresh caps + cleared cooldowns
-                        retrying, failed_ids = failed_ids, []
-                        rex = ThreadPoolExecutor(max_workers=workers)
-                        try:
-                            rfut = {rex.submit(self._download_one, sid, col_dir): sid
-                                    for sid in retrying}
-                            for fut in as_completed(rfut):
-                                if self._cancelled:
-                                    break
-                                sid, path, err = fut.result()
-                                if err:
-                                    failed_ids.append(sid)   # skip after this
-                                    continue
-                                if path is None:
-                                    failed -= 1   # reclassify: not rate-limit, 404
-                                    absent += 1
-                                    continue
-                                failed -= 1   # recovered a previously-failed set
+                    self._prep(
+                        f"Retrying {len(retrying)} rate-limited map(s) (~20s)…",
+                        title=f"Retrying {len(retrying)} rate-limited map(s)…",
+                    )
+                    BeatmapMirror.reset_state()   # clear this pass's cooldowns
+                    recovered = 0
+                    rex = ThreadPoolExecutor(max_workers=workers)
+                    rfut = [rex.submit(self._download_one, sid, col_dir)
+                            for sid in retrying]
+                    try:
+                        for fut in as_completed(rfut, timeout=20):
+                            if self._cancelled:
+                                break
+                            _sid, path, err = fut.result()
+                            if path is not None and not err:
+                                recovered += 1
                                 ok += 1
+                                failed -= 1
                                 self._log(f"  [retry-ok] {path.name}")
                                 self._maybe_import(path)
-                        finally:
-                            rex.shutdown(wait=not self._cancelled, cancel_futures=True)
-                if failed_ids:
-                    # Skipped, not errored — the user opted for speed over waiting.
-                    self._log(
-                        f"  [skip] {len(failed_ids)} set(s) still rate-limited "
-                        "after one retry — skipped; re-run the collection later "
-                        "to grab them"
-                    )
+                    except FuturesTimeout:
+                        pass   # 20s budget elapsed — skip the rest
+                    finally:
+                        rex.shutdown(wait=False, cancel_futures=True)
+                    skipped_now = len(retrying) - recovered
+                    if skipped_now > 0:
+                        self._log(
+                            f"  [skip] {skipped_now} set(s) still rate-limited — "
+                            "skipped; re-run the collection later to grab them"
+                        )
             else:
                 # No beatmap download requested. Still emit progress so the
                 # bar finishes.
