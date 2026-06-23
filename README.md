@@ -26,9 +26,31 @@ Everything else — your osu!lazer binary, `client.realm`, the Collection Manage
 - Live activity log, toasts, and a satisfying finish
 - Cancel button (stops cleanly between beatmaps)
 - Optional `.osdb` generation and consolidation into a single `db/` subfolder
-- **Native installer** for **Windows** (`Setup.exe`, bundles the Collection Manager CLI + auto-installs WebView2/.NET if missing) and a **macOS** `.dmg`, with a **built-in update checker** that one-click installs new releases. On **Linux**, [run from source](#linux-run-from-source-recommended) — the reliable path across distros
+- **Native installer** for **Windows** (`Setup.exe`, bundles the Collection Manager CLI + auto-installs WebView2/.NET if missing) and a **macOS** `.dmg`, with a **built-in update checker** that one-click installs new releases. On **Linux**, [run from source](#run-from-source-any-os) — the reliable path across distros
 
-## Install (from source)
+## Download & install
+
+Most people want the prebuilt release — no Python, no terminal.
+
+**→ Grab the latest from the [Releases page](https://github.com/R3dWolfie/Osu-Collector-GUI/releases/latest).**
+
+| Platform | Download | Setup |
+|---|---|---|
+| **Windows 10 / 11** | `Setup.exe` | Run it. The installer bundles the Collection Manager CLI and auto-installs WebView2 + the .NET 9 runtime if they're missing. Nothing else to do. |
+| **macOS** | `.dmg` | Drag to Applications. First launch: **right-click → Open** (the app is unsigned). Collection *merging* needs one extra step — see [Collection merging off Windows](#collection-merging-off-windows-linux--macos). |
+| **Linux** — Debian / Ubuntu / Mint / Fedora | `.AppImage` | `chmod +x ...AppImage` and run it. For *merging*, see [below](#collection-merging-off-windows-linux--macos). |
+| **Linux** — Arch / other rolling or bleeding-edge | *run from source* | The AppImage's bundled WebKit breaks on newer/rolling distros — [run from source](#run-from-source-any-os) instead. It's three commands. |
+
+### What works everywhere vs. what needs setup
+
+The app has two halves, and it's worth knowing which is which:
+
+- **Core — download maps + auto-import them into osu!lazer's library.** Pure Python on top of your system's browser engine. Works on **every** platform with **zero** extra setup.
+- **Collection organizing — putting maps into a *named* collection, merging into existing ones, the import-dropdown list, and the Export tab.** Handled by the [Collection Manager CLI](https://github.com/Piotrekol/CollectionManager), which is a **Windows-only .NET 9** tool (its Realm reader is a Windows-native library — there is no Linux/macOS build). On **Windows** it's bundled and fully automatic. On **Linux/macOS** it runs through the **WineHQ flatpak**, which is a one-time setup.
+
+So: downloading collections into your lazer library *just works* anywhere. Organizing them into named collections needs Windows, or wine elsewhere.
+
+## Run from source (any OS)
 
 ```sh
 git clone https://github.com/R3dWolfie/Osu-Collector-GUI.git
@@ -39,12 +61,8 @@ pip install -r requirements.txt
 python osu_collector_gui.py
 ```
 
-### Linux: run from source (recommended)
-
-`pywebview` renders into the host's **WebKitGTK**, which is tightly tied to the
-system GObject stack — so on Linux the reliable path is running from source
-against your distro's own libraries. (A bundled AppImage fights newer distros'
-WebKit/GLib; this is a known pywebview-on-Linux limitation.)
+**Linux** renders into the host's **WebKitGTK**, which is tightly tied to the system
+GObject stack, so it needs the system bindings and a venv that can see them:
 
 ```sh
 # 1. System packages — WebKitGTK + GTK3 + PyGObject:
@@ -61,20 +79,41 @@ python osu_collector_gui.py
 
 Windows uses the built-in **Edge WebView2** runtime and macOS uses system **WebKit**, so the prebuilt installers there need no extra backend setup.
 
-#### Reading / merging osu!lazer collections on Linux (optional)
+## Collection merging off Windows (Linux / macOS)
 
-Downloads and auto-import work with just the steps above. **Listing your existing
-lazer collections and merging into them** is done by the Collection Manager CLI —
-a Windows **.NET 9** tool — which on Linux runs through the WineHQ flatpak. Run the
-bundled setup once; it installs the flatpak + the .NET 9 runtime and grants it
-access to your osu! data:
+Downloads and auto-import work with no extra steps. To also **list existing
+lazer collections and merge into them**, install the wine-hosted Collection
+Manager CLI once. On **Linux** a script does the whole thing — WineHQ flatpak +
+.NET 9 runtime + filesystem permissions for your osu! data:
 
 ```sh
 scripts/setup-linux.sh            # or: scripts/setup-linux.sh /path/to/osu/data
 ```
 
-Then launch the app and your collections appear in the import dropdown. (On
-Windows the installer handles all of this automatically.)
+Then relaunch the app and your collections appear in the import dropdown. On
+**Windows** the installer already handles all of this; nothing to run.
+
+## Troubleshooting
+
+- **My whole PC lags while downloading.** High parallelism plus live auto-import
+  hammers disk/CPU. In **Settings → Tuning**, click the **Gentle** speed preset
+  (or lower *Parallel downloads*), and/or turn off **Auto-import** so osu!lazer
+  isn't importing at the same time. The lag is only during a run.
+- **Linux: the AppImage won't start** (WebKit / "failed to spawn" errors,
+  common on Arch and other rolling distros). [Run from source](#run-from-source-any-os) —
+  it uses your system's own WebKit and is reliable across distros.
+- **Linux: "Application Crash · wine-preloader" / collections stopped listing
+  after a system update.** A freedesktop flatpak-runtime update can break the
+  WineHQ flatpak (its `services.exe` crashes in the new libc). Roll the runtime
+  back and pin it:
+  ```sh
+  # find the previous commit:
+  flatpak remote-info --user --log flathub org.freedesktop.Platform/x86_64/25.08
+  # roll back to it, then mask so updates can't re-break it:
+  flatpak update --user --commit=<PREVIOUS_COMMIT> org.freedesktop.Platform/x86_64/25.08
+  flatpak mask  --user org.freedesktop.Platform//25.08
+  # later, to allow updates again: flatpak mask --user --remove org.freedesktop.Platform//25.08
+  ```
 
 ## Build standalone binaries (Windows · macOS · Linux)
 
