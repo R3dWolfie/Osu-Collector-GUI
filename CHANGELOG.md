@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.8] — 2026-06-23
+
+### Fixed
+
+- **Skip-already-imported now unions hash AND id matching.** v1.5.7 switched to
+  hash-only, which actually matched *fewer* maps — hash and id catch different
+  sets (hash → OnlineID=-1 mirror imports; id → verified maps whose on-disk
+  file differs from the collection's reference). The probe now runs both
+  against one realm snapshot and skips a set if its **md5 OR its online id** is
+  in lazer. Catches the maps both single-method probes missed.
+
 ## [1.5.7] — 2026-06-23
 
 ### Fixed

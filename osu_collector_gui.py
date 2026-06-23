@@ -39,7 +39,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.7"
+APP_VERSION = "1.5.8"
 APP_AUTHOR = "Red"
 
 
@@ -1162,44 +1162,43 @@ class CmCliRunner:
                 # so the caller proceeds to a full download.
                 return ProbeResult()
 
-            # Hash matching is more reliable; fall back to ids only if the
-            # collection gave us no checksums. Both -b and -h accept a file
-            # path (avoids the command-line length limit on 1000s of entries).
-            if hashes:
-                query_file.write_text("\n".join(hashes))
-                flag = "-h"
-            else:
-                query_file.write_text("\n".join(str(b) for b in beatmap_ids))
-                flag = "-b"
-
-            argv = [*self.cfg.command, "create",
-                    flag, str(query_file),
-                    "-o", str(probe_osdb),
-                    "-l", str(probe_realm_dir)]
-            self._run(argv)
-
-            if not probe_osdb.exists() or probe_osdb.stat().st_size == 0:
-                return ProbeResult()
-
-            parsed = OsdbReader.read(probe_osdb)
-            if not parsed:
-                return ProbeResult()
-
-            # An entry is "imported" if CM recognized it: a real online id, OR
-            # real metadata (catches OnlineID=-1 maps matched by hash). Build
-            # both an id→bm map and a set of recognized md5s.
+            # CM CLI rejects -b and -h in the same call, and the two catch
+            # DIFFERENT maps: hash matches maps lazer imported with OnlineID=-1
+            # (mirror imports it couldn't verify), id matches verified maps
+            # whose on-disk file differs from the collection's reference md5.
+            # So run both against the one snapshot and union the results. Both
+            # flags accept a file path (dodges the command-line length limit).
             resolved: dict[int, BeatmapInfo] = {}
             resolved_hashes: set[str] = set()
-            for c in parsed:
-                for bm in c.beatmaps:
-                    artist = (getattr(bm, "artist", "") or "").strip().lower()
-                    recognized = bm.beatmap_id > 0 or (artist not in ("", "unknown"))
-                    if not recognized:
-                        continue
-                    if bm.beatmap_id > 0:
-                        resolved[bm.beatmap_id] = bm
-                    if getattr(bm, "md5", ""):
-                        resolved_hashes.add(bm.md5)
+
+            def _run_query(flag: str, values: list) -> None:
+                try:
+                    probe_osdb.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                query_file.write_text("\n".join(str(v) for v in values))
+                self._run([*self.cfg.command, "create",
+                           flag, str(query_file),
+                           "-o", str(probe_osdb),
+                           "-l", str(probe_realm_dir)])
+                if not probe_osdb.exists() or probe_osdb.stat().st_size == 0:
+                    return
+                for c in OsdbReader.read(probe_osdb):
+                    for bm in c.beatmaps:
+                        artist = (getattr(bm, "artist", "") or "").strip().lower()
+                        # Recognized = real online id OR real metadata (the
+                        # latter catches OnlineID=-1 maps matched by hash).
+                        if not (bm.beatmap_id > 0 or artist not in ("", "unknown")):
+                            continue
+                        if bm.beatmap_id > 0:
+                            resolved[bm.beatmap_id] = bm
+                        if getattr(bm, "md5", ""):
+                            resolved_hashes.add(bm.md5)
+
+            if hashes:
+                _run_query("-h", hashes)
+            if beatmap_ids:
+                _run_query("-b", beatmap_ids)
             return ProbeResult(resolved=resolved, resolved_hashes=resolved_hashes)
         except Exception:
             return ProbeResult()
