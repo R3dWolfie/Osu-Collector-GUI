@@ -368,8 +368,11 @@ function appendLog(line, cls) {
 function classForLine(line) {
   const t = line.trimStart();
   if (t.startsWith("===")) return "l-head";
+  if (t.startsWith("[retry-ok]")) return "l-ok";   // recovered on retry
   if (t.startsWith("[error") || t.startsWith("ERROR") || t.includes("WARNING")) return "l-err";
-  if (t.startsWith("[skip") || t.startsWith("[cleanup") || t.startsWith("[settings")) return "l-skip";
+  // Rate-limit / retry chatter is expected, not an error — keep it calm.
+  if (t.startsWith("[skip") || t.startsWith("[cleanup") || t.startsWith("[settings")
+      || t.startsWith("[retry") || t.startsWith("[rate-limited")) return "l-skip";
   if (t.includes("[probe]")) return "l-probe";
   if (/^\[\d+\/\d+\]/.test(t) || t.startsWith("[lazer] done") || t.startsWith("[.osdb]")) return "l-ok";
   return "";

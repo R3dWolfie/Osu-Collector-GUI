@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.3] — 2026-06-23
+
+### Changed
+
+- **Quieter download log — no more wall of red.** Sets that fail a pass on
+  mirror rate-limits are retried (since 1.5.1), so they're no longer logged as
+  a red `[error]` each; instead the run shows one calm "[retry] N set(s) hit
+  rate limits — retrying" summary and a "[skip] N not hosted on any mirror"
+  summary. A red `[error]` now means a *final* failure that survived all retry
+  rounds. Recovered-on-retry maps log a green `[retry-ok]`.
+
 ## [1.5.2] — 2026-06-23
 
 ### Fixed

@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 APP_AUTHOR = "Red"
 
 
@@ -1725,6 +1725,7 @@ class Downloader:
 
             ok = 0
             failed = 0
+            absent = 0   # 404 on every mirror — genuinely not hosted anywhere
             skipped = 0
 
             # --- generate .osdb (independent of beatmap downloads) ---
@@ -1766,14 +1767,14 @@ class Downloader:
                         if err:
                             # Transient — all mirrors errored (rate-limit/5xx)
                             # within the deadline. Recoverable, so queue it for
-                            # the retry pass instead of abandoning the map.
+                            # the retry pass. DON'T log a red error per set: on a
+                            # big collection that's a wall of scary red for what
+                            # are really "will retry" hiccups. Summarised below.
                             failed += 1
                             failed_ids.append(sid)
-                            self._log(f"  [error {sid}: {err}]")
                             continue
                         if path is None:
-                            failed += 1
-                            self._log(f"  [skip {sid}: not on mirror]")
+                            absent += 1   # 404 everywhere; summarised below
                             continue
                         ok += 1
                         self._log(f"  [{done}/{len(set_ids)}] {path.name}")
@@ -1783,6 +1784,15 @@ class Downloader:
                     # queued futures and return now; each running download sees
                     # should_cancel() and bails at its next chunk.
                     ex.shutdown(wait=not self._cancelled, cancel_futures=True)
+
+                if absent:
+                    self._log(f"  [skip] {absent} set(s) not hosted on any mirror")
+                if failed_ids and not self._cancelled:
+                    self._log(
+                        f"  [retry] {len(failed_ids)} set(s) hit mirror rate "
+                        "limits — retrying in spaced rounds (this is normal for "
+                        "big collections; the maps aren't lost)"
+                    )
 
                 # --- retry pass for transient failures ---
                 # Mirrors rate-limit by IP over time, so on a big collection a
@@ -1823,18 +1833,19 @@ class Downloader:
                                 failed_ids.append(sid)   # try again next round
                                 continue
                             if path is None:
-                                # genuinely absent now — leave it counted failed
-                                self._log(f"  [skip {sid}: not on mirror]")
+                                failed -= 1   # reclassify: not a rate-limit, 404
+                                absent += 1
                                 continue
                             failed -= 1   # recovered a previously-failed set
                             ok += 1
-                            self._log(f"  [retry ok] {path.name}")
+                            self._log(f"  [retry-ok] {path.name}")
                             self._maybe_import(path)
                     finally:
                         rex.shutdown(wait=not self._cancelled, cancel_futures=True)
                 if failed_ids:
+                    # Now these are genuine, final failures — worth a red line.
                     self._log(
-                        f"  [retry] {len(failed_ids)} set(s) still failed after "
+                        f"  [error] {len(failed_ids)} set(s) still failed after "
                         "3 retry rounds — mirrors kept rate-limiting; "
                         "re-run later to grab the rest"
                     )
@@ -1847,6 +1858,7 @@ class Downloader:
             self._collection_finished(idx, ok, len(info.beatmapset_ids))
             self._log(
                 f"=== {info.name}: {ok} ok, {failed} failed, "
+                f"{absent} not on mirrors, "
                 f"{skipped} skipped (already imported) ==="
             )
             if ok > 0 or skipped > 0 or self.job.generate_osdb:
