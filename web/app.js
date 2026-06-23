@@ -458,7 +458,7 @@ function wireStaticUi() {
     const r = await callApi("apply_update",
       (state.update && state.update.download_url) || "");
     if (r && r.ok && r.opened === "page")
-      toast("Opened the releases page in your browser.", "ok", "// update");
+      toast(r.message || "Opened the releases page in your browser.", "ok", "// update");
     else if (r && r.ok)
       toast("Installer launched — close this app to finish updating.", "ok", "// update");
     else

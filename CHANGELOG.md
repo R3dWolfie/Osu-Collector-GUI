@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.3] — 2026-06-23
+
+### Fixed
+
+- **"Update" no longer downloads/launches a release artifact when running from
+  source.** On a `git`/source checkout the in-app updater used to fetch the
+  platform installer (on Linux, the AppImage that's broken on Arch) and run it
+  — the wrong update vector, and a crash. It now opens the Releases page and
+  tells you to `git pull` instead. Packaged builds are unaffected.
+
 ## [1.4.2] — 2026-06-23
 
 ### Fixed

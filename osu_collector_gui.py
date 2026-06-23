@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 APP_AUTHOR = "Red"
 
 
@@ -2951,6 +2951,19 @@ class JsApi:
     def apply_update(self, download_url: str = "") -> dict:
         """Download the platform installer and launch it; if no direct asset
         is available, open the releases page in the browser instead."""
+        # Running from source (not a frozen/packaged build): downloading and
+        # launching a release artifact is the wrong update vector — it won't
+        # touch the git checkout, and on Linux it would fetch the AppImage
+        # (which is broken on Arch/rolling distros) and crash. Point the user
+        # at the releases page and tell them to update their source instead.
+        if not getattr(sys, "frozen", False):
+            try:
+                import webbrowser
+                webbrowser.open(GITHUB_RELEASES_PAGE)
+            except Exception:
+                pass
+            return {"ok": True, "opened": "page",
+                    "message": "You're running from source — `git pull` to update."}
         if not download_url:
             try:
                 import webbrowser
