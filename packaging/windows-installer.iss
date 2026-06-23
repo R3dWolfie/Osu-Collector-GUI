@@ -2,7 +2,7 @@
 ; Compiled in CI with:  iscc /DAppVersion=<x.y.z> packaging\windows-installer.iss
 ;
 ; Expects, relative to the repo root (SourceDir=.. below):
-;   dist\osu-collector-gui.exe                       (PyInstaller one-file build)
+;   dist\osu-collector-gui\                           (PyInstaller --onedir build: exe + _internal\)
 ;   deps\cm-cli\CollectionManager.App.Cli.exe        (+ realm-wrappers.dll)
 ;   deps\MicrosoftEdgeWebview2Setup.exe              (WebView2 evergreen bootstrapper)
 ;   deps\windowsdesktop-runtime.exe                  (.NET 9 Desktop Runtime — the CM CLI is .NET 9)
@@ -46,7 +46,11 @@ RestartApplications=no
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "dist\osu-collector-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
+; PyInstaller --onedir output: the exe + its _internal\ folder. Copy the whole
+; tree into {app}; the exe lands at {app}\osu-collector-gui.exe (so all the
+; references below stay valid) and loads Python from {app}\_internal — no
+; %TEMP% extraction, the failure point of the old one-file build.
+Source: "dist\osu-collector-gui\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Bundled Collection Manager CLI — the app auto-detects it at {app}\cm-cli\.
 Source: "deps\cm-cli\*"; DestDir: "{app}\cm-cli"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; WebView2 bootstrapper: extracted to {tmp} on demand and run only if missing.

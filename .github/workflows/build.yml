@@ -64,7 +64,11 @@ jobs:
       - name: Build exe (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --noconfirm --windowed --onefile `
+          # --onedir (not --onefile): the installer bundles the whole folder
+          # into {app}, so there's no per-launch %TEMP%\_MEI extraction. That
+          # extraction is what fails with "Failed to load Python DLL" when AV
+          # quarantines a temp DLL or a CRT dependency isn't found there.
+          pyinstaller --noconfirm --windowed --onedir `
             --name osu-collector-gui `
             --icon packaging/icon.ico `
             --add-data "web;web" `

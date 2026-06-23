@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2] — 2026-06-23
+
+### Fixed
+
+- **"Failed to load Python DLL" crash on launch (Windows).** The Windows build
+  was `--onefile`, which extracts Python to `%TEMP%\_MEI…` on every launch and
+  loads `python312.dll` from there — fragile, and it fails outright when
+  antivirus quarantines a temp DLL or a CRT dependency isn't found. Switched to
+  `--onedir`: the installer lays the files down permanently in the app folder,
+  so Python loads from `{app}\_internal` with no temp extraction. Also launches
+  faster and is friendlier to antivirus.
+
 ## [1.5.1] — 2026-06-23
 
 ### Fixed

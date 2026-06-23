@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 APP_AUTHOR = "Red"
 
 
