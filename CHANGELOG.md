@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.4] — 2026-06-23
+
+### Changed
+
+- **Retry pass is now a single 20s round, then skip.** The escalating 3-round
+  retry (20s → 40s → 60s cooldowns) made the end of a big collection wait 2+
+  minutes. Now: one 20s cooldown + one retry, then any still-rate-limited sets
+  are **skipped** (logged calmly, not as errors) — re-run the collection later
+  to grab them. Faster finish; no long wait.
+
 ## [1.5.3] — 2026-06-23
 
 ### Changed

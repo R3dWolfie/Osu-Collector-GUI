@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 APP_AUTHOR = "Red"
 
 
@@ -1794,60 +1794,58 @@ class Downloader:
                         "big collections; the maps aren't lost)"
                     )
 
-                # --- retry pass for transient failures ---
-                # Mirrors rate-limit by IP over time, so on a big collection a
-                # chunk of sets fail their first attempt (403/429/503 across
-                # every mirror at once). Those recover once the per-IP windows
-                # cool, so retry them in a couple of spaced-out rounds rather
-                # than losing the maps. 404-everywhere sets aren't retried.
-                retry_round = 0
-                while failed_ids and not self._cancelled and retry_round < 3:
-                    retry_round += 1
-                    wait_s = 20 * retry_round   # back off further each round
+                # --- single retry pass for transient failures ---
+                # Sets that failed on mirror rate-limits get ONE short retry:
+                # a 20s cooldown so the per-IP windows partially reset, one more
+                # attempt, then skip whatever's still failing rather than make
+                # the user wait through escalating rounds. Re-running the
+                # collection later picks up the stragglers. (404-everywhere sets
+                # aren't here — they're counted as 'absent', not retried.)
+                if failed_ids and not self._cancelled:
+                    wait_s = 20
                     self._prep(
                         f"Mirrors rate-limited {len(failed_ids)} map(s); cooling "
-                        f"down {wait_s}s then retrying (round {retry_round}/3)…",
+                        f"down {wait_s}s then one retry…",
                         title=f"Retrying {len(failed_ids)} rate-limited map(s)…",
                     )
                     self._log(
-                        f"  [retry {retry_round}/3] {len(failed_ids)} set(s) hit "
-                        f"mirror rate limits; waiting {wait_s}s for cooldowns"
+                        f"  [retry] {len(failed_ids)} set(s) hit mirror rate "
+                        f"limits; waiting {wait_s}s then retrying once"
                     )
                     for _ in range(wait_s * 5):   # interruptible sleep
                         if self._cancelled:
                             break
                         time.sleep(0.2)
-                    if self._cancelled:
-                        break
-                    BeatmapMirror.reset_state()   # fresh caps + cleared cooldowns
-                    retrying, failed_ids = failed_ids, []
-                    rex = ThreadPoolExecutor(max_workers=workers)
-                    try:
-                        rfut = {rex.submit(self._download_one, sid, col_dir): sid
-                                for sid in retrying}
-                        for fut in as_completed(rfut):
-                            if self._cancelled:
-                                break
-                            sid, path, err = fut.result()
-                            if err:
-                                failed_ids.append(sid)   # try again next round
-                                continue
-                            if path is None:
-                                failed -= 1   # reclassify: not a rate-limit, 404
-                                absent += 1
-                                continue
-                            failed -= 1   # recovered a previously-failed set
-                            ok += 1
-                            self._log(f"  [retry-ok] {path.name}")
-                            self._maybe_import(path)
-                    finally:
-                        rex.shutdown(wait=not self._cancelled, cancel_futures=True)
+                    if not self._cancelled:
+                        BeatmapMirror.reset_state()   # fresh caps + cleared cooldowns
+                        retrying, failed_ids = failed_ids, []
+                        rex = ThreadPoolExecutor(max_workers=workers)
+                        try:
+                            rfut = {rex.submit(self._download_one, sid, col_dir): sid
+                                    for sid in retrying}
+                            for fut in as_completed(rfut):
+                                if self._cancelled:
+                                    break
+                                sid, path, err = fut.result()
+                                if err:
+                                    failed_ids.append(sid)   # skip after this
+                                    continue
+                                if path is None:
+                                    failed -= 1   # reclassify: not rate-limit, 404
+                                    absent += 1
+                                    continue
+                                failed -= 1   # recovered a previously-failed set
+                                ok += 1
+                                self._log(f"  [retry-ok] {path.name}")
+                                self._maybe_import(path)
+                        finally:
+                            rex.shutdown(wait=not self._cancelled, cancel_futures=True)
                 if failed_ids:
-                    # Now these are genuine, final failures — worth a red line.
+                    # Skipped, not errored — the user opted for speed over waiting.
                     self._log(
-                        f"  [error] {len(failed_ids)} set(s) still failed after "
-                        "3 retry rounds — mirrors kept rate-limiting; "
-                        "re-run later to grab the rest"
+                        f"  [skip] {len(failed_ids)} set(s) still rate-limited "
+                        "after one retry — skipped; re-run the collection later "
+                        "to grab them"
                     )
             else:
                 # No beatmap download requested. Still emit progress so the
