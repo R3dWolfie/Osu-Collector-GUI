@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 APP_AUTHOR = "Red"
 
 
@@ -2450,6 +2450,44 @@ class JsApi:
 
     # ----- state / settings ------------------------------------------------
 
+    def _detected_state(self) -> dict:
+        """Detection-panel state that honors manual path overrides, not just
+        auto-detection. A user who sets client.realm / the lazer binary by
+        hand should see it as 'found' once it's on disk — otherwise the panel
+        keeps showing 'not found' even though the run will happily use it."""
+        s = self._settings
+        det = _autodetect_paths()
+
+        def _override(path_key: str, detected_key: str, raw) -> None:
+            raw = (raw or "").strip()
+            if not raw:
+                return
+            try:
+                exists = Path(raw).expanduser().exists()
+            except OSError:
+                exists = False
+            if exists:
+                det[path_key] = str(Path(raw).expanduser())
+                det[detected_key] = True
+
+        _override("realm_path", "realm_detected", s.get("lazer_realm_path"))
+        _override("osu_binary", "osu_detected", s.get("osu_binary"))
+
+        cm_cmd = _normalize_cm(s.get("cm_cli_command")) if s.get("cm_cli_command") else None
+        if cm_cmd:
+            # A single-token command is a path we can existence-check; a
+            # multi-token one (e.g. `flatpak run …`) we trust as configured.
+            ok = True
+            if len(cm_cmd) == 1:
+                try:
+                    ok = Path(cm_cmd[0]).expanduser().exists()
+                except OSError:
+                    ok = False
+            if ok:
+                det["cm_cli_command"] = shlex.join(cm_cmd)
+                det["cm_detected"] = True
+        return det
+
     def get_state(self) -> dict:
         """Everything the frontend needs to render its initial state."""
         s = self._settings
@@ -2483,7 +2521,7 @@ class JsApi:
                 "cm_cli_command": cm_str,
                 "custom_mirrors": s.get("custom_mirrors", ""),
             },
-            "detected": auto,
+            "detected": self._detected_state(),
             "labels": {
                 "default_target": DEFAULT_TARGET,
                 "new_target": NEW_TARGET,

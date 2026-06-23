@@ -487,11 +487,11 @@ function wireStaticUi() {
   };
   $("#browse-osu").onclick = async () => {
     const p = await callApi("choose_file", $("#osu_binary").value);
-    if (p) $("#osu_binary").value = p;
+    if (p) { $("#osu_binary").value = p; await saveSettings(); }
   };
   $("#browse-realm").onclick = async () => {
     const p = await callApi("choose_file", $("#lazer_realm_path").value);
-    if (p) $("#lazer_realm_path").value = p;
+    if (p) { $("#lazer_realm_path").value = p; await saveSettings(); }
   };
 
   window.addEventListener("resize", () => {

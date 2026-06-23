@@ -41,6 +41,32 @@ def test_get_state_has_expected_shape():
     assert st["labels"]["no_merge"] == g.target_combo_no_merge_label()
 
 
+def test_detected_state_honors_manual_realm_override(tmp_path):
+    """A manually-set client.realm that exists must show as detected, even
+    when auto-detection wouldn't have found it (regression: the panel used
+    to report 'not found' for valid manual paths)."""
+    realm = tmp_path / "client.realm"
+    realm.write_bytes(b"x" * 16)
+    api = g.JsApi()
+    api._settings["lazer_realm_path"] = str(realm)
+    det = api._detected_state()
+    assert det["realm_detected"] is True
+    assert det["realm_path"] == str(realm)
+    # And it propagates into the full state the frontend renders.
+    assert api.get_state()["detected"]["realm_detected"] is True
+
+
+def test_detected_state_rejects_nonexistent_manual_realm(tmp_path, monkeypatch):
+    """A manual path that doesn't exist must NOT be reported as detected.
+    Force auto-detection to find nothing so we isolate the manual-path logic
+    (the test host may have a real lazer realm at the default location)."""
+    monkeypatch.setattr(g, "_default_lazer_realm_path",
+                        lambda: tmp_path / "nope.realm")
+    api = g.JsApi()
+    api._settings["lazer_realm_path"] = "/no/such/place/client.realm"
+    assert api._detected_state()["realm_detected"] is False
+
+
 def test_downloader_emits_through_callback():
     events = []
     job = g.DownloadJob(collection_ids=[], output_dir=g.Path("/tmp"))

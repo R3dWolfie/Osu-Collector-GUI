@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] — 2026-06-23
+
+### Fixed
+
+- **Manually-set client.realm (and lazer binary) now show as "detected."** The
+  detection panel was built purely from auto-detection and ignored manual path
+  overrides, so a realm you set by hand kept reporting "not found" even though
+  it was saved and the run used it fine. The panel now honors a manual path
+  once it exists on disk, and **Browse…** auto-saves so the indicator updates
+  immediately (no separate "Save settings" click needed).
+
 ## [1.4.1] — 2026-06-23
 
 ### Changed
