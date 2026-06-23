@@ -59,3 +59,28 @@ def test_acquire_respects_cap():
     assert second == "https://b/d"
     # Both full -> None (caller waits), never over-subscribes.
     assert B._acquire_least_busy(urls, excluding=set(), respect_caps=True) is None
+
+
+def test_sayobot_hard_capped_at_one():
+    """Sayobot (slow CN CDN) is hard-capped to a single concurrent download,
+    regardless of the adaptive cap — both its full and no-video templates."""
+    assert g._mirror_hard_cap("https://dl.sayobot.cn/beatmaps/download/full/{id}") == 1
+    assert g._mirror_hard_cap("https://dl.sayobot.cn/beatmaps/download/novideo/{id}") == 1
+    assert g._mirror_hard_cap("https://catboy.best/d/{id}") == g.PER_MIRROR_MAX
+
+    B.reset_state()
+    sayo = "https://dl.sayobot.cn/beatmaps/download/full/{id}"
+    # One slot only — a second acquire must be refused even though the adaptive
+    # start (2) would otherwise allow it.
+    assert B._acquire_least_busy([sayo], excluding=set(), respect_caps=True) == sayo
+    assert B._acquire_least_busy([sayo], excluding=set(), respect_caps=True) is None
+
+
+def test_sayobot_cap_never_probes_upward():
+    """on_success must not let sayobot's cap climb past its hard ceiling of 1."""
+    B.reset_state()
+    sayo = "https://dl.sayobot.cn/beatmaps/download/full/{id}"
+    B._limit[sayo] = 1
+    for _ in range(g.PER_MIRROR_PROBE_EVERY * 3):
+        B.on_success(sayo)
+    assert B._limit[sayo] == 1   # hard ceiling of 1, never grows

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] — 2026-06-23
+
+### Changed
+
+- **Sayobot mirror hard-capped to 1 concurrent download.** It's a slow CN CDN
+  (~200 KB/s from outside China, redirects to a high port) and tended to stall
+  workers and time out on big maps — looking "dead" in the logs. It stays as a
+  lowest-priority backstop but can now tie up at most one worker. Other mirrors
+  are unaffected (adaptive cap up to 12).
+
 ## [1.4.0] — 2026-06-22
 
 ### Changed

@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 APP_AUTHOR = "Red"
 
 
@@ -109,6 +109,23 @@ PER_MIRROR_START = 2         # start gentle so the opening burst across all
 PER_MIRROR_MIN = 1
 PER_MIRROR_MAX = 12
 PER_MIRROR_PROBE_EVERY = 4   # consecutive successes per +1 to the cap
+
+# Per-mirror hard ceiling on concurrency, matched by domain substring and
+# applied on TOP of the adaptive cap. Sayobot is a slow CN CDN that redirects
+# to a high port (~200 KB/s from outside China); capping it at 1 means a slow
+# stall there can tie up at most one worker instead of soaking several. Matches
+# both its full and no-video templates.
+PER_MIRROR_HARD_CAP: tuple[tuple[str, int], ...] = (
+    ("sayobot", 1),
+)
+
+
+def _mirror_hard_cap(url: str) -> int:
+    """The hard concurrency ceiling for a mirror URL (PER_MIRROR_MAX if none)."""
+    for needle, cap in PER_MIRROR_HARD_CAP:
+        if needle in url:
+            return cap
+    return PER_MIRROR_MAX
 RATE_LIMIT_COOLDOWN_S = 8.0  # default pause for a 429 with no Retry-After
 RATE_LIMIT_COOLDOWN_MAX = 30.0   # never sideline a mirror longer than this,
                                  # so one big Retry-After can't stall a set
@@ -429,13 +446,14 @@ class BeatmapMirror:
         """A clean download: additively probe the cap upward (one step per
         PER_MIRROR_PROBE_EVERY consecutive successes), up to the ceiling."""
         with cls._state_lock:
+            ceiling = _mirror_hard_cap(url)
             cur = cls._limit.get(url, PER_MIRROR_START)
-            if cur >= PER_MIRROR_MAX:
+            if cur >= ceiling:
                 cls._success[url] = 0
                 return
             n = cls._success.get(url, 0) + 1
             if n >= PER_MIRROR_PROBE_EVERY:
-                cls._limit[url] = min(PER_MIRROR_MAX, cur + 1)
+                cls._limit[url] = min(ceiling, cur + 1)
                 cls._success[url] = 0
             else:
                 cls._success[url] = n
@@ -478,7 +496,9 @@ class BeatmapMirror:
                 # no dead-mirror fallback (we'd rather wait for a cooldown).
                 available = [
                     u for u in available
-                    if cls._active.get(u, 0) < cls._limit.get(u, PER_MIRROR_START)
+                    if cls._active.get(u, 0) < min(
+                        cls._limit.get(u, PER_MIRROR_START), _mirror_hard_cap(u)
+                    )
                 ]
             elif not available:
                 # Every alive candidate excluded — allow dead mirrors so
