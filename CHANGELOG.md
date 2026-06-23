@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] — 2026-06-23
+
+### Fixed
+
+- **Maps that fail to download are now retried instead of lost.** On a big
+  collection, mirrors rate-limit by IP over time (403/429) and occasionally
+  503, so a chunk of sets can fail their first attempt when *every* mirror is
+  cooling down at once — at any concurrency, even Gentle. Those were just
+  logged and abandoned. Now failed sets are retried in up to 3 spaced-out
+  rounds (20s/40s/60s cooldowns, mirror state reset each round) so the per-IP
+  windows clear and the maps come through. Sets genuinely absent from every
+  mirror (404) aren't retried.
+
 ## [1.5.0] — 2026-06-23
 
 ### Added

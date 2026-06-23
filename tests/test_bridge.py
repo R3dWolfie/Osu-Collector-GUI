@@ -1,5 +1,7 @@
 """Tests for the Qt-free web bridge layer (parsing, settings state, the
 Downloader event shim). These run without a webview or any GUI deps."""
+from unittest.mock import MagicMock
+
 import osu_collector_gui as g
 
 
@@ -65,6 +67,43 @@ def test_detected_state_rejects_nonexistent_manual_realm(tmp_path, monkeypatch):
     api = g.JsApi()
     api._settings["lazer_realm_path"] = "/no/such/place/client.realm"
     assert api._detected_state()["realm_detected"] is False
+
+
+def test_failed_sets_are_retried_not_lost(tmp_path, monkeypatch):
+    """A set that fails its first download on a transient mirror error must be
+    retried and recovered, not abandoned (the bug: failures were just logged)."""
+    job = g.DownloadJob(
+        collection_ids=[1], output_dir=tmp_path,
+        download_beatmaps=True, auto_import=False, generate_osdb=False,
+        add_to_lazer_collections=False, skip_already_imported=False,
+    )
+    d = g.Downloader(job, lambda name, payload: None)
+
+    info = g.CollectionInfo(id=1, name="T", uploader="R3D",
+                            beatmap_count=2, beatmapset_ids=[101, 102])
+    d.api = MagicMock()
+    d.api.fetch_collection.return_value = info
+
+    attempts: dict[int, int] = {}
+
+    def fake_download(set_id, dest_dir, should_cancel=None):
+        attempts[set_id] = attempts.get(set_id, 0) + 1
+        if set_id == 101 and attempts[101] == 1:
+            raise g.requests.HTTPError("429 rate limited")  # transient first time
+        p = dest_dir / f"{set_id}.osz"
+        p.write_bytes(b"PK\x03\x04")
+        return p
+
+    d.mirror = MagicMock()
+    d.mirror.download.side_effect = fake_download
+    monkeypatch.setattr(g.time, "sleep", lambda *a, **k: None)  # no real cooldown wait
+
+    d.run()
+
+    assert attempts[101] == 2, "the failed set should have been retried once"
+    col_dir = tmp_path / "1 - T"
+    assert (col_dir / "101.osz").exists(), "retried set must end up downloaded"
+    assert (col_dir / "102.osz").exists()
 
 
 def test_downloader_emits_through_callback():
