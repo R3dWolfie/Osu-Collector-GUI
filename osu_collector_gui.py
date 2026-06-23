@@ -38,7 +38,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.5.0"
 APP_AUTHOR = "Red"
 
 
@@ -219,12 +219,16 @@ class OsuCollectorClient:
         raise last if last else RuntimeError(f"GET failed: {url}")
 
     def fetch_collection(self, collection_id: int,
-                         with_beatmap_details: bool = False) -> CollectionInfo:
+                         with_beatmap_details: bool = False,
+                         progress: Callable[[int], None] | None = None
+                         ) -> CollectionInfo:
         """Fetch collection metadata + flat list of beatmapset IDs.
 
         If with_beatmap_details is True, also fetches per-beatmap details
         (artist, title, diff name, mode, star rating, md5) needed for
-        .osdb generation. Costs extra paginated API calls.
+        .osdb generation. Costs extra paginated API calls. `progress`, if
+        given, is called with the running beatmap-detail count after each page
+        so the UI can show "fetching…" feedback on large collections.
         """
         url = f"{OSU_COLLECTOR_API}/collections/{collection_id}"
         r = self._get(url)
@@ -252,10 +256,12 @@ class OsuCollectorClient:
         )
 
         if with_beatmap_details:
-            info.beatmaps = self._fetch_beatmaps_paged(collection_id)
+            info.beatmaps = self._fetch_beatmaps_paged(collection_id, progress)
         return info
 
-    def _fetch_beatmaps_paged(self, collection_id: int) -> list[BeatmapInfo]:
+    def _fetch_beatmaps_paged(self, collection_id: int,
+                              progress: Callable[[int], None] | None = None
+                              ) -> list[BeatmapInfo]:
         """Page through /beatmapsv2 to get details for every beatmap."""
         out: list[BeatmapInfo] = []
         cursor = "0"
@@ -277,6 +283,11 @@ class OsuCollectorClient:
                     mode=_MODE_TO_INT.get(str(b.get("mode") or "osu").lower(), 0),
                     star_rating=float(b.get("difficulty_rating") or 0.0),
                 ))
+            if progress:
+                try:
+                    progress(len(out))
+                except Exception:
+                    pass
             if not data.get("hasMore"):
                 break
             cursor = str(data.get("nextPageCursor") or "")
@@ -1501,6 +1512,11 @@ class Downloader:
         self._emit("collection_finished",
                    {"idx": idx, "ok": ok, "total": total})
 
+    def _prep(self, detail: str, title: str | None = None) -> None:
+        """Surface pre-download progress (fetching the beatmap list, probing the
+        library) so the 'Starting…' phase isn't an opaque wait on big collections."""
+        self._emit("prep", {"detail": detail, "title": title})
+
     def _awaiting_import(self, n: int) -> None:
         self._emit("awaiting_import_confirmation", {"n": n})
 
@@ -1649,8 +1665,17 @@ class Downloader:
             # that consumes them is on — incl. merging into a lazer
             # collection, which reads the .osdb files we generate this run.
             need_details = self._should_fetch_details()
+            self._prep(
+                "Fetching the collection's beatmap list…",
+                title=f"Preparing collection {idx}/{total}…",
+            )
             try:
-                info = self.api.fetch_collection(cid, with_beatmap_details=need_details)
+                info = self.api.fetch_collection(
+                    cid, with_beatmap_details=need_details,
+                    progress=(lambda n: self._prep(
+                        f"Fetching beatmap details… {n:,} so far"))
+                    if need_details else None,
+                )
             except Exception as e:
                 self._error(f"Collection {cid}: {e}")
                 continue
@@ -1670,6 +1695,10 @@ class Downloader:
             probe_md5_map: dict[int, str] = {}
             if self._probe_enabled_for_job() and info.beatmaps and not self._cancelled:
                 try:
+                    self._prep(
+                        f"Checking your osu!lazer library "
+                        f"({len(info.beatmaps):,} maps)…"
+                    )
                     self._log(
                         f"  [probe] querying lazer for {len(info.beatmaps)} beatmap IDs..."
                     )
@@ -3015,7 +3044,58 @@ class JsApi:
             pass
 
 
+CRASH_LOG = Path(
+    os.environ.get("TEMP", "/tmp") if sys.platform == "win32" else "/tmp"
+) / "oc-crash.log"
+
+
+def _write_crash(text: str) -> Path | None:
+    """Append a traceback to the crash log so a windowed build's startup
+    failure isn't silent. Returns the log path (or None if it couldn't write)."""
+    try:
+        with CRASH_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"\n===== {datetime.now(timezone.utc).isoformat()} "
+                    f"v{APP_VERSION} {sys.platform} =====\n")
+            f.write(text)
+        return CRASH_LOG
+    except OSError:
+        return None
+
+
+def _report_crash(exc: BaseException) -> None:
+    """Log + surface an unhandled exception. On a windowed Windows build there's
+    no console, so also pop a MessageBox pointing at the log."""
+    import traceback
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    log_path = _write_crash(text)
+    try:
+        sys.stderr.write(text)
+    except Exception:
+        pass
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+                None,
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"Full details written to:\n{log_path or '(could not write log)'}",
+                f"osu-collector-gui v{APP_VERSION} hit an error", 0x10)
+    except Exception:
+        pass
+
+
+def _install_crash_handler() -> None:
+    """Route uncaught exceptions (main + worker threads) through _report_crash."""
+    sys.excepthook = lambda et, ev, tb: _report_crash(
+        ev if isinstance(ev, BaseException) else et(ev))
+    try:
+        threading.excepthook = lambda a: _report_crash(a.exc_value)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 def main() -> int:
+    _install_crash_handler()
     try:
         import webview
     except ImportError:

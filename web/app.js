@@ -296,6 +296,7 @@ window.ocOnEvent = function (msg) {
   const d = (msg && msg.data) || {};
   switch (ev) {
     case "log": appendLog(d.line); break;
+    case "prep": onPrep(d); break;
     case "collection_started": onCollectionStarted(d); break;
     case "beatmap_progress": onBeatmapProgress(d); break;
     case "collection_finished": break;
@@ -307,6 +308,13 @@ window.ocOnEvent = function (msg) {
       break;
   }
 };
+
+function onPrep(d) {
+  // Pre-download phase feedback (fetching the list / probing the library) so
+  // "Starting…" isn't an opaque wait on large collections.
+  if (d.title) $("#dock-title").textContent = d.title;
+  if (d.detail) $("#dock-file").textContent = d.detail;
+}
 
 function onCollectionStarted(d) {
   state.curIdx = d.idx; state.curTotal = d.total || state.totalCollections;

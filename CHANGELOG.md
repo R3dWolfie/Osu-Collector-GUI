@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] — 2026-06-23
+
+### Added
+
+- **Live progress during "Starting…".** Before the first download, a big
+  collection spends time (1) paging the full beatmap list from osu!collector
+  and (2) probing osu!lazer for what you already have. The dock now shows what
+  it's doing — "Fetching beatmap details… 8,200 so far", "Checking your
+  osu!lazer library…" — instead of an opaque "Starting…".
+- **Crash handler.** Unhandled exceptions (incl. on a windowed Windows build
+  with no console) are written to `oc-crash.log` in the temp dir and shown in a
+  dialog, so a startup failure is captured instead of vanishing.
+
 ## [1.4.3] — 2026-06-23
 
 ### Fixed
