@@ -75,6 +75,42 @@ def test_probe_writes_bids_to_realm_parent_and_returns_resolved(tmp_path):
     # the finally block deliberately cleans it up.
 
 
+def test_probe_matches_by_hash_including_onlineid_minus_one(tmp_path):
+    """Hash matching must catch maps lazer imported with no positive online id
+    (e.g. mirror imports it couldn't verify) as long as they have real
+    metadata — id matching alone would miss them."""
+    realm = tmp_path / "client.realm"
+    realm.write_bytes(b"fake")
+    captured: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        captured.append(argv)
+        out_path = Path(argv[argv.index("-o") + 1])
+        _write_fake_probe_osdb(out_path, [
+            BeatmapInfo(beatmap_id=42, set_id=100, md5="hash-ranked",
+                        artist="A", title="T", diff_name="D"),
+            # OnlineID unknown but real metadata -> recognized via hash.
+            BeatmapInfo(beatmap_id=0, set_id=200, md5="hash-unverified",
+                        artist="RealArtist", title="RealTitle", diff_name="D"),
+            # Not in lazer -> Unknown metadata, id 0 -> NOT recognized.
+            BeatmapInfo(beatmap_id=0, set_id=300, md5="hash-missing",
+                        artist="Unknown", title="Unknown", diff_name="D"),
+        ])
+        r = MagicMock(); r.returncode = 0; r.stdout = ""; r.stderr = ""
+        return r
+
+    runner = CmCliRunner(CmCliConfig(command=["/fake/cm.exe"], osu_location=None))
+    with patch("osu_collector_gui.subprocess.run", side_effect=fake_run):
+        result = runner.probe_imported_beatmaps(
+            realm, [], hashes=["hash-ranked", "hash-unverified", "hash-missing"])
+
+    [argv] = captured
+    assert "-h" in argv                       # probed by hash, not id
+    assert "hash-ranked" in result.resolved_hashes
+    assert "hash-unverified" in result.resolved_hashes   # the OnlineID=-1 case
+    assert "hash-missing" not in result.resolved_hashes  # Unknown -> not imported
+
+
 def test_probe_returns_empty_result_when_cm_cli_fails(tmp_path):
     realm = tmp_path / "client.realm"
     realm.write_bytes(b"fake")

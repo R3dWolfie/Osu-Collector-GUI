@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.7] — 2026-06-23
+
+### Fixed
+
+- **Skip-already-imported now matches by MD5 hash, not just online ID.** Maps
+  lazer imported from mirror `.osz` files often land with `OnlineID = -1` (it
+  couldn't verify them online), so the id-based probe missed them and they got
+  re-downloaded even though they were already in your library. The probe now
+  asks the CM CLI by **beatmap hash** (`create -h`), which lazer stores
+  reliably — so already-imported maps are correctly skipped regardless of their
+  online id. Verified against a real realm; falls back to id matching only when
+  a collection provides no checksums.
+
 ## [1.5.6] — 2026-06-23
 
 ### Fixed

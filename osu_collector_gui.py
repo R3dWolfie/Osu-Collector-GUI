@@ -39,7 +39,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.5.7"
 APP_AUTHOR = "Red"
 
 
@@ -1052,13 +1052,17 @@ def merge_collection_lists(
 
 @dataclass
 class ProbeResult:
-    """Result of asking CM CLI which beatmap_ids lazer has imported.
+    """Result of asking CM CLI which beatmaps lazer has imported.
 
-    `resolved` maps beatmap_id → BeatmapInfo with lazer's current md5
-    and metadata. Any beatmap_id NOT in `resolved` is implicitly "lazer
-    doesn't have it" — we don't need an explicit unresolved set.
+    `resolved` maps beatmap_id → BeatmapInfo with lazer's current md5 and
+    metadata. `resolved_hashes` is the set of md5 hashes lazer recognized —
+    this catches maps imported with OnlineID=-1 (common for mirror imports
+    lazer couldn't verify online), which `resolved` (keyed by online id)
+    would miss. A beatmap is "already imported" if its id is in `resolved`
+    OR its md5 is in `resolved_hashes`.
     """
     resolved: dict[int, BeatmapInfo] = field(default_factory=dict)
+    resolved_hashes: set = field(default_factory=set)
 
 
 @dataclass
@@ -1113,28 +1117,32 @@ class CmCliRunner:
         self._run(argv)
 
     def probe_imported_beatmaps(self, realm_path: Path,
-                                beatmap_ids: list[int]) -> ProbeResult:
-        """Ask CM CLI which of `beatmap_ids` lazer's BeatmapInfo DB knows.
+                                beatmap_ids: list[int],
+                                hashes: list[str] | None = None) -> ProbeResult:
+        """Ask CM CLI which beatmaps lazer's BeatmapInfo DB already has.
 
-        Runs `cm.exe create -b <bids_file> -o probe.osdb -l <realm_parent>`.
-        CM loads lazer's beatmap DB (because of -l) and enriches each id it
-        recognizes with full metadata. Unrecognized ids end up as hash-only
-        entries in the resulting .osdb (which we don't need to parse — they
-        have beatmap_id=0 when OsdbReader returns them, easy to filter out).
+        Prefers matching by **md5 hash** (`create -h <file> -l <realm>`) over
+        beatmap id (`-b`), because lazer imports from mirror .osz files often
+        land with OnlineID=-1 (it couldn't verify them online) — their id won't
+        match the collection's, but their md5 is stored correctly. CM loads
+        lazer's DB (via -l) and enriches each entry it recognizes with full
+        metadata; unrecognized ones come back as `Unknown` / id 0. So an entry
+        counts as "imported" if it has a real online id OR real metadata.
 
-        The bids file and probe.osdb live in the realm's parent .oc-gui-tmp/
-        dir — same wine-sandbox-safe convention used by the merge step.
+        The query file + probe.osdb live in the realm's parent .oc-gui-tmp/ dir
+        — the same wine-sandbox-safe convention the merge step uses.
 
-        Fail-open: any error returns an empty ProbeResult so the caller
-        falls through to downloading everything (vs. fail-closed merge
-        step, which refuses to write on read failure).
+        Fail-open: any error returns an empty ProbeResult so the caller falls
+        through to downloading everything.
         """
-        if not beatmap_ids:
+        hashes = [h for h in (hashes or []) if h]
+        beatmap_ids = [b for b in (beatmap_ids or []) if b]
+        if not hashes and not beatmap_ids:
             return ProbeResult()
 
         tmp_dir = realm_path.parent / ".oc-gui-tmp"
         tmp_dir.mkdir(exist_ok=True)
-        bids_file = tmp_dir / "probe-bids.txt"
+        query_file = tmp_dir / "probe-query.txt"
         probe_osdb = tmp_dir / "probe.osdb"
 
         # Snapshot the realm into a probe-only subdir so CM CLI doesn't
@@ -1154,10 +1162,18 @@ class CmCliRunner:
                 # so the caller proceeds to a full download.
                 return ProbeResult()
 
-            bids_file.write_text("\n".join(str(b) for b in beatmap_ids))
+            # Hash matching is more reliable; fall back to ids only if the
+            # collection gave us no checksums. Both -b and -h accept a file
+            # path (avoids the command-line length limit on 1000s of entries).
+            if hashes:
+                query_file.write_text("\n".join(hashes))
+                flag = "-h"
+            else:
+                query_file.write_text("\n".join(str(b) for b in beatmap_ids))
+                flag = "-b"
 
             argv = [*self.cfg.command, "create",
-                    "-b", str(bids_file),
+                    flag, str(query_file),
                     "-o", str(probe_osdb),
                     "-l", str(probe_realm_dir)]
             self._run(argv)
@@ -1169,14 +1185,22 @@ class CmCliRunner:
             if not parsed:
                 return ProbeResult()
 
-            # probe.osdb contains exactly one synthetic collection;
-            # resolved entries have beatmap_id > 0, hash-only entries
-            # have beatmap_id == 0 (and we don't care about them).
-            resolved = {bm.beatmap_id: bm
-                        for c in parsed
-                        for bm in c.beatmaps
-                        if bm.beatmap_id > 0}
-            return ProbeResult(resolved=resolved)
+            # An entry is "imported" if CM recognized it: a real online id, OR
+            # real metadata (catches OnlineID=-1 maps matched by hash). Build
+            # both an id→bm map and a set of recognized md5s.
+            resolved: dict[int, BeatmapInfo] = {}
+            resolved_hashes: set[str] = set()
+            for c in parsed:
+                for bm in c.beatmaps:
+                    artist = (getattr(bm, "artist", "") or "").strip().lower()
+                    recognized = bm.beatmap_id > 0 or (artist not in ("", "unknown"))
+                    if not recognized:
+                        continue
+                    if bm.beatmap_id > 0:
+                        resolved[bm.beatmap_id] = bm
+                    if getattr(bm, "md5", ""):
+                        resolved_hashes.add(bm.md5)
+            return ProbeResult(resolved=resolved, resolved_hashes=resolved_hashes)
         except Exception:
             return ProbeResult()
         finally:
@@ -1717,7 +1741,8 @@ class Downloader:
                         f"({len(info.beatmaps):,} maps)…"
                     )
                     self._log(
-                        f"  [probe] querying lazer for {len(info.beatmaps)} beatmap IDs..."
+                        f"  [probe] checking lazer for {len(info.beatmaps)} maps "
+                        "(by hash)..."
                     )
                     cm = CmCliRunner(CmCliConfig(
                         command=list(self.job.cm_cli_command),
@@ -1725,15 +1750,19 @@ class Downloader:
                     ))
                     realm = Path(self.job.lazer_realm_path).expanduser()
                     probe = cm.probe_imported_beatmaps(
-                        realm, [b.beatmap_id for b in info.beatmaps if b.beatmap_id]
+                        realm,
+                        [b.beatmap_id for b in info.beatmaps if b.beatmap_id],
+                        hashes=[b.md5 for b in info.beatmaps if b.md5],
                     )
                     probe_md5_map = {bid: bm.md5 for bid, bm in probe.resolved.items() if bm.md5}
-                    skipped_set_ids = {
-                        b.set_id for b in info.beatmaps
-                        if b.beatmap_id in probe.resolved and b.set_id
-                    }
+                    # A map is already imported if lazer knows its md5 OR its id.
+                    have = lambda b: (b.md5 and b.md5 in probe.resolved_hashes) \
+                        or (b.beatmap_id and b.beatmap_id in probe.resolved)
+                    matched = sum(1 for b in info.beatmaps if have(b))
+                    skipped_set_ids = {b.set_id for b in info.beatmaps
+                                       if have(b) and b.set_id}
                     self._log(
-                        f"  [probe] lazer has {len(probe.resolved)}/{len(info.beatmaps)} maps; "
+                        f"  [probe] lazer has {matched}/{len(info.beatmaps)} maps; "
                         f"skipping {len(skipped_set_ids)}/{len(info.beatmapset_ids)} sets"
                     )
                 except Exception as e:
