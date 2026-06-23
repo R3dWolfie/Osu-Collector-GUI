@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.6] — 2026-06-23
+
+### Fixed
+
+- **"Skip already-imported maps" now works on plain downloads, not just merges.**
+  The probe that checks osu!lazer for maps you already have was gated behind
+  "merge into a collection" — so a plain download or Import-All re-downloaded
+  everything, even already-imported maps. The probe now runs for any download
+  when the toggle is on and a readable `client.realm` + CM CLI are available
+  (and the CM CLI is auto-fetched for skip-only runs too). Watch for the
+  `[probe] lazer has X/Y maps; skipping Z sets` log line — if it's missing,
+  your realm isn't detected (set it in Settings → Paths).
+
 ## [1.5.5] — 2026-06-23
 
 ### Fixed

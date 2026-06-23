@@ -39,7 +39,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 APP_NAME = "osu-collector-gui"
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 APP_AUTHOR = "Red"
 
 
@@ -1584,10 +1584,14 @@ class Downloader:
             self._import_executor.shutdown(wait=False, cancel_futures=True)
 
     def _probe_enabled_for_job(self) -> bool:
-        """All gates that must be true for the probe step to run."""
+        """All gates that must be true for the probe step to run.
+
+        Note: this is NOT tied to merging into a collection. Skipping maps you
+        already have in osu!lazer is useful for any download (incl. a plain one
+        or a re-run), so it only needs the toggle + a readable realm + CM CLI.
+        """
         return bool(
             self.job.skip_already_imported
-            and self.job.add_to_lazer_collections
             and self.job.cm_cli_command
             and self.job.lazer_realm_path
             and Path(self.job.lazer_realm_path).expanduser().exists()
@@ -2917,11 +2921,13 @@ class JsApi:
             no_merge = target_combo_no_merge_label()
             realm_ok = bool(realm and Path(realm).expanduser().exists())
             merge_wanted = target != no_merge
-            # If the user wants to merge and has a realm but CM CLI wasn't
-            # found, auto-download it so merging works with zero manual setup.
+            want_skip = bool(S.get("skip_already_imported", True))
+            # Auto-download the CM CLI if we have a realm but no CLI yet and
+            # we'd use it — either to merge, OR to probe lazer for the
+            # "skip already-imported" dedup (which also needs the CLI + realm).
             # On Windows this is the whole fix; on Linux it still needs the
             # wine flatpak, so a failure here just falls through to the warning.
-            if merge_wanted and realm_ok and not cm_cmd:
+            if (merge_wanted or want_skip) and realm_ok and not cm_cmd:
                 try:
                     CmCliInstaller.install(log_func=lambda s: None)
                     cm_cmd = _normalize_cm(
